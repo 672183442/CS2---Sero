@@ -1,9 +1,7 @@
-#pragma once
+﻿#pragma once
 #include "..\imgui_d11\imgui.h"
-#include "utils/lang.hpp"
 #include <string>
 
-// 性能优化配置结构
 struct PerformanceConfig {
     int updateInterval = 3;
     float maxDrawDistance = 8000.0f;
@@ -19,6 +17,8 @@ struct PerformanceConfig {
 struct MenuData
 {
     int language = 0;
+
+    // ESP
     bool bMainESP = false;
     bool bBoxESP = false;
     bool bHealthESP = false;
@@ -28,10 +28,12 @@ struct MenuData
     bool bDistanceESP = false;
     bool bC4ESP = false;
     bool bGrenadeESP = false;
-    bool bGrenadeCarried = true;   // ★ 新增：绘制敌人携带的投掷物
-    bool bGrenadeThrown = true;    // ★ 新增：绘制丢出的投掷物
-    bool bGrenadeDebug = false;    // ★ 新增：调试模式（设置里开关）
+    bool bGrenadeCarried = true;
+    bool bGrenadeThrown = true;
+    bool bGrenadeDebug = false;
+    bool bRemoveFriends = true;
 
+    // Aim
     bool bAutoAim = false;
     float fAimSmooth = 1.0f;
     float fAimSpeed = 1.0f;
@@ -43,22 +45,8 @@ struct MenuData
     bool bVisibleAim = false;
     bool bAimFriends = false;
 
+    // Other
     bool bAntiFlash = true;
-    bool bRemoveFriends = true;
-
-    ImVec4 AccentColor;
-    ImVec4 AimLockColor;
-    float WindowAlpha;
-    float WindowRound;
-    float FontScale;
-    float ItemSpacing;
-    float FramePaddingX;
-    float FramePaddingY;
-    float RayThickness;
-    ImVec4 BoxColorVisible;
-    ImVec4 BoxColorInvisible;
-    ImVec4 RayColorVisible;
-    ImVec4 RayColorInvisible;
     bool bFOVChanger = false;
     float fFOVValue = 90.0f;
     bool bThirdPerson = false;
@@ -71,6 +59,25 @@ struct MenuData
     ImVec4 GlowColor;
     ImVec4 GlowColorVisible;
     ImVec4 GlowColorInvisible;
+
+    // Colors
+    ImVec4 AccentColor;
+    ImVec4 AimLockColor;
+    ImVec4 BoxColorVisible;
+    ImVec4 BoxColorInvisible;
+    ImVec4 RayColorVisible;
+    ImVec4 RayColorInvisible;
+    float RayThickness = 1.5f;
+
+    // Window
+    float WindowAlpha = 0.93f;
+    float WindowRound = 9.0f;
+    float FontScale = 1.0f;
+    float ItemSpacing = 8.0f;
+    float FramePaddingX = 6.0f;
+    float FramePaddingY = 5.0f;
+
+    // Remote
     std::string versionInfo;
     std::string versionNumber;
     std::string announcement;
@@ -81,13 +88,6 @@ struct MenuData
     {
         AccentColor = ImVec4(0.98f, 0.07f, 0.22f, 1.0f);
         AimLockColor = ImVec4(0.0f, 1.0f, 0.0f, 1.0f);
-        WindowAlpha = 0.93f;
-        WindowRound = 9.0f;
-        FontScale = 1.0f;
-        ItemSpacing = 8.0f;
-        FramePaddingX = 6.0f;
-        FramePaddingY = 5.0f;
-        RayThickness = 1.5f;
         BoxColorVisible = ImVec4(0.0f, 1.0f, 0.0f, 1.0f);
         BoxColorInvisible = ImVec4(1.0f, 0.0f, 0.0f, 1.0f);
         RayColorVisible = ImVec4(0.0f, 1.0f, 0.0f, 0.8f);
@@ -99,6 +99,7 @@ struct MenuData
 };
 
 extern MenuData g_MenuData;
-void SetupModernImGuiStyle();
-void RenderMainMenu();
+
+// HUD 通知（右下角弹窗）
+void AddHUDNotification(const char* text, const char* subtext = "", ImU32 color = IM_COL32(100, 200, 100, 255));
 void RenderHUD();

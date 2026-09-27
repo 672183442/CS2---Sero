@@ -36,9 +36,6 @@
     <ClCompile Include="imgui_d11\imgui_widgets.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
-    <ClCompile Include="Main\ImGui_Menu.cpp">
-      <Filter>源文件</Filter>
-    </ClCompile>
     <ClCompile Include="Main\core\memory\memory.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
@@ -46,6 +43,18 @@
       <Filter>源文件</Filter>
     </ClCompile>
     <ClCompile Include="Main\features\cheat.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="Main\ui.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="Main\effects.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="Main\theme.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="Main\menu.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
   </ItemGroup>
@@ -75,9 +84,6 @@
       <Filter>头文件</Filter>
     </ClInclude>
     <ClInclude Include="minhook_debug_x64\include\MinHook.h">
-      <Filter>头文件</Filter>
-    </ClInclude>
-    <ClInclude Include="Main\ImGui_Menu.h">
       <Filter>头文件</Filter>
     </ClInclude>
     <ClInclude Include="Main\core\memory\memory.hpp">
@@ -171,6 +177,24 @@
       <Filter>头文件</Filter>
     </ClInclude>
     <ClInclude Include="Main\features\cheat.hpp">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="Main\ui.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="Main\theme.hpp">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="Main\effects.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="Main\menu.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="Main\theme.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="Main\utils\lang.hpp">
       <Filter>头文件</Filter>
     </ClInclude>
   </ItemGroup>

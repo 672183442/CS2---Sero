@@ -27,9 +27,12 @@
     <ClCompile Include="imgui_d11\imgui_widgets.cpp" />
     <ClCompile Include="Main\core\memory\memory.cpp" />
     <ClCompile Include="Main\core\runtime_offsets.cpp" />
+    <ClCompile Include="Main\effects.cpp" />
     <ClCompile Include="Main\features\cheat.cpp" />
-    <ClCompile Include="Main\ImGui_Menu.cpp" />
     <ClCompile Include="Main\main.cpp" />
+    <ClCompile Include="Main\menu.cpp" />
+    <ClCompile Include="Main\theme.cpp" />
+    <ClCompile Include="Main\ui.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="dumper\animationsystem_dll.hpp" />
@@ -68,8 +71,13 @@
     <ClInclude Include="Main\core\memory\memory.hpp" />
     <ClInclude Include="Main\core\runtime_offsets.hpp" />
     <ClInclude Include="Main\core\renderer\internal_renderer.h" />
+    <ClInclude Include="Main\effects.h" />
     <ClInclude Include="Main\features\cheat.hpp" />
-    <ClInclude Include="Main\ImGui_Menu.h" />
+    <ClInclude Include="Main\menu.h" />
+    <ClInclude Include="Main\theme.h" />
+    <ClInclude Include="Main\theme.hpp" />
+    <ClInclude Include="Main\ui.h" />
+    <ClInclude Include="Main\utils\lang.hpp" />
     <ClInclude Include="Main\utils\math\vector.hpp" />
     <ClInclude Include="Main\utils\weapon_names.hpp" />
     <ClInclude Include="minhook_debug_x64\include\MinHook.h" />
