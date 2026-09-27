@@ -67,7 +67,7 @@ namespace Cheat
     static std::vector<std::pair<std::string, float>> g_recentNewEntities;
 
     // ============================================================================
-    // ★ 前置声明：供 UpdateGroundItems 使用
+    // 前置声明
     // ============================================================================
     static uintptr_t ResolveEntityHandle(uintptr_t entityList, uint32_t handle);
     static bool TryGetEntityPosition(uintptr_t entity, vec3& position);
@@ -225,6 +225,19 @@ namespace Cheat
         return -1;
     }
 
+    // ★ 新增：判断这个 weapon_xxx 是不是投掷物
+    static bool IsGrenadeWeapon(const std::string& lower) {
+        if (lower.empty()) return false;
+        if (lower.find("hegrenade") != std::string::npos) return true;
+        if (lower.find("flashbang") != std::string::npos) return true;
+        if (lower.find("smokegrenade") != std::string::npos) return true;
+        if (lower.find("molotov") != std::string::npos) return true;
+        if (lower.find("decoy") != std::string::npos) return true;
+        if (lower.find("incendiary") != std::string::npos) return true;
+        if (lower.find("incgrenade") != std::string::npos) return true;
+        return false;
+    }
+
     static const char* GetGrenadeNameEN(int type) {
         switch (type) {
         case 0: return "HE";
@@ -251,6 +264,23 @@ namespace Cheat
 
     static const char* GetGrenadeName(int type) {
         return g_MenuData.language == 0 ? GetGrenadeNameEN(type) : GetGrenadeNameCN(type);
+    }
+
+    // ★ 新增：从 design name 直接翻译成友好名字
+    static std::string GetGrenadeDisplayName(const std::string& lowerName) {
+        bool isThrownDummy = false;
+        int type = ClassifyGrenade(lowerName, isThrownDummy);
+        if (type < 0) {
+            // 兜底：尝试直接判断
+            if (lowerName.find("hegrenade") != std::string::npos) type = 0;
+            else if (lowerName.find("flashbang") != std::string::npos) type = 1;
+            else if (lowerName.find("smokegrenade") != std::string::npos || lowerName.find("smoke") != std::string::npos) type = 2;
+            else if (lowerName.find("molotov") != std::string::npos) type = 3;
+            else if (lowerName.find("decoy") != std::string::npos) type = 4;
+            else if (lowerName.find("incendiary") != std::string::npos || lowerName.find("incgrenade") != std::string::npos) type = 5;
+            else return "";
+        }
+        return std::string(GetGrenadeName(type));
     }
 
     static ImU32 GetGrenadeColor(int type) {
@@ -355,11 +385,12 @@ namespace Cheat
 
             if (type < 0) continue;
 
-            if (isThrown && !g_MenuData.bGrenadeThrown) continue;
-            if (!isThrown && !g_MenuData.bGrenadeCarried) continue;
+            // ★ 携带的投掷物不在这里处理（由 UpdateGroundItems 处理）
+            if (!isThrown) continue;
 
-            if (isThrown) thrownCount++;
-            else carriedCount++;
+            if (!g_MenuData.bGrenadeThrown) continue;
+
+            thrownCount++;
 
             uintptr_t sceneNode = memory::Read<uintptr_t>(
                 entity + cs2_dumper::schemas::client_dll::C_BaseEntity::m_pGameSceneNode);
@@ -383,7 +414,7 @@ namespace Cheat
                 info.isActive = true;
                 info.landingRecorded = false;
                 info.disappearTimer = 0.0f;
-                info.isThrown = isThrown;
+                info.isThrown = true;
                 g_grenadeMap[entity] = info;
             }
             else {
@@ -398,7 +429,7 @@ namespace Cheat
                 info.type = type;
                 info.isActive = true;
                 info.disappearTimer = 0.0f;
-                info.isThrown = isThrown;
+                info.isThrown = true;
 
                 if (!info.landingRecorded && moved < 0.5f) {
                     info.landingPosition = pos;
@@ -451,13 +482,14 @@ namespace Cheat
     }
 
     // ============================================================================
-    // 掉落武器 + C4 携带/掉落
+    // 掉落武器 + C4 携带/掉落 + 玩家携带的投掷物
     // ============================================================================
     void UpdateGroundItems() {
-        bool needWeapons = g_MenuData.bWeaponESP;
+        bool needDroppedWeapons = g_MenuData.bWeaponESP;
         bool needC4 = g_MenuData.bC4ESP;
+        bool needCarriedGrenades = g_MenuData.bGrenadeESP && g_MenuData.bGrenadeCarried;
 
-        if (!needWeapons && !needC4) {
+        if (!needDroppedWeapons && !needC4 && !needCarriedGrenades) {
             std::lock_guard<std::mutex> lock(dataMutex);
             droppedWeapons.clear();
             g_droppedWeaponMap.clear();
@@ -469,7 +501,10 @@ namespace Cheat
                 c4Info.carrierPawn = 0;
                 c4Info.position = { 0,0,0 };
             }
-            for (auto& e : enemies) e.hasC4 = false;
+            for (auto& e : enemies) {
+                e.hasC4 = false;
+                e.carriedGrenades.clear();
+            }
             return;
         }
 
@@ -491,6 +526,9 @@ namespace Cheat
         if (highest > 8192) highest = 8192;
 
         std::unordered_set<uintptr_t> foundDropped;
+
+        // ★ 携带的投掷物：pawn -> vector<显示名>
+        std::unordered_map<uintptr_t, std::vector<std::string>> carriedGrenadeMap;
 
         bool foundCarriedC4 = false;
         uintptr_t carriedC4Owner = 0;
@@ -518,7 +556,7 @@ namespace Cheat
                 entity + cs2_dumper::schemas::client_dll::C_BaseEntity::m_hOwnerEntity);
             bool isDropped = (ownerHandle == 0xFFFFFFFF || ownerHandle == 0);
 
-            // C4
+            // ============ C4 特殊处理 ============
             if (lower.find("weapon_c4") != std::string::npos) {
                 if (needC4) {
                     if (isDropped) {
@@ -547,32 +585,46 @@ namespace Cheat
                 continue;
             }
 
-            // 普通掉落武器
-            if (needWeapons && isDropped) {
-                uintptr_t sceneNode = memory::Read<uintptr_t>(
-                    entity + cs2_dumper::schemas::client_dll::C_BaseEntity::m_pGameSceneNode);
-                if (!sceneNode) continue;
-                vec3 pos = memory::Read<vec3>(
-                    sceneNode + cs2_dumper::schemas::client_dll::CGameSceneNode::m_vecAbsOrigin);
-                if (!std::isfinite(pos.x) || !std::isfinite(pos.y) || !std::isfinite(pos.z)) continue;
-                if (std::abs(pos.x) > 100000.0f || std::abs(pos.y) > 100000.0f || std::abs(pos.z) > 100000.0f) continue;
+            // ============ 掉落武器 ============
+            if (isDropped) {
+                if (needDroppedWeapons) {
+                    uintptr_t sceneNode = memory::Read<uintptr_t>(
+                        entity + cs2_dumper::schemas::client_dll::C_BaseEntity::m_pGameSceneNode);
+                    if (!sceneNode) continue;
+                    vec3 pos = memory::Read<vec3>(
+                        sceneNode + cs2_dumper::schemas::client_dll::CGameSceneNode::m_vecAbsOrigin);
+                    if (!std::isfinite(pos.x) || !std::isfinite(pos.y) || !std::isfinite(pos.z)) continue;
+                    if (std::abs(pos.x) > 100000.0f || std::abs(pos.y) > 100000.0f || std::abs(pos.z) > 100000.0f) continue;
 
-                uintptr_t attrMgr = entity + cs2_dumper::schemas::client_dll::C_EconEntity::m_AttributeManager;
-                uint16_t itemDef = memory::Read<uint16_t>(
-                    attrMgr
-                    + cs2_dumper::schemas::client_dll::C_AttributeContainer::m_Item
-                    + cs2_dumper::schemas::client_dll::C_EconItemView::m_iItemDefinitionIndex);
-                std::string weaponName = GetWeaponNameCached(itemDef);
+                    uintptr_t attrMgr = entity + cs2_dumper::schemas::client_dll::C_EconEntity::m_AttributeManager;
+                    uint16_t itemDef = memory::Read<uint16_t>(
+                        attrMgr
+                        + cs2_dumper::schemas::client_dll::C_AttributeContainer::m_Item
+                        + cs2_dumper::schemas::client_dll::C_EconItemView::m_iItemDefinitionIndex);
+                    std::string weaponName = GetWeaponNameCached(itemDef);
 
-                foundDropped.insert(entity);
+                    foundDropped.insert(entity);
 
-                DroppedWeaponInfo info;
-                info.entity = entity;
-                info.position = pos;
-                info.weaponName = weaponName;
-                info.itemDef = itemDef;
-                info.isC4 = false;
-                g_droppedWeaponMap[entity] = info;
+                    DroppedWeaponInfo info;
+                    info.entity = entity;
+                    info.position = pos;
+                    info.weaponName = weaponName;
+                    info.itemDef = itemDef;
+                    info.isC4 = false;
+                    g_droppedWeaponMap[entity] = info;
+                }
+            }
+            // ============ 携带的投掷物 ============
+            else {
+                if (needCarriedGrenades && IsGrenadeWeapon(lower)) {
+                    uintptr_t owner = ResolveEntityHandle(entityList, ownerHandle);
+                    if (owner) {
+                        std::string displayName = GetGrenadeDisplayName(lower);
+                        if (!displayName.empty()) {
+                            carriedGrenadeMap[owner].push_back(displayName);
+                        }
+                    }
+                }
             }
         }
 
@@ -586,11 +638,13 @@ namespace Cheat
         {
             std::lock_guard<std::mutex> lock(dataMutex);
 
+            // 掉落武器
             droppedWeapons.clear();
             droppedWeapons.reserve(g_droppedWeaponMap.size());
             for (const auto& kv : g_droppedWeaponMap) droppedWeapons.push_back(kv.second);
             g_debugDroppedWeaponCount = (int)droppedWeapons.size();
 
+            // C4 状态
             if (!c4Info.isPlanted) {
                 if (foundCarriedC4) {
                     c4Info.exists = true;
@@ -615,8 +669,17 @@ namespace Cheat
                 }
             }
 
+            // 每个玩家的携带投掷物 + hasC4
             for (auto& e : enemies) {
                 e.hasC4 = c4Info.isCarried && c4Info.carrierPawn != 0 && e.pawn == c4Info.carrierPawn;
+
+                auto it = carriedGrenadeMap.find(e.pawn);
+                if (it != carriedGrenadeMap.end()) {
+                    e.carriedGrenades = it->second;
+                }
+                else {
+                    e.carriedGrenades.clear();
+                }
             }
         }
     }
@@ -698,7 +761,6 @@ namespace Cheat
         return (mask & (1ULL << bit)) != 0;
     }
 
-    // ★ 定义（前置声明在上面）
     static uintptr_t ResolveEntityHandle(uintptr_t entityList, uint32_t handle) {
         if (!entityList || !handle || handle == 0xFFFFFFFF) return 0;
         uint32_t entityIndex = handle & 0x7FFF;
@@ -707,7 +769,6 @@ namespace Cheat
         return memory::Read<uintptr_t>(listEntry + 0x70 * (entityIndex & 0x1FF));
     }
 
-    // ★ 定义（前置声明在上面）
     static bool TryGetEntityPosition(uintptr_t entity, vec3& position) {
         if (!entity) return false;
         uintptr_t sceneNode = memory::Read<uintptr_t>(entity + cs2_dumper::schemas::client_dll::C_BaseEntity::m_pGameSceneNode);
@@ -945,6 +1006,7 @@ namespace Cheat
             enemy.isSpotted = isSpotted;
             enemy.isFriend = isFriend;
             enemy.hasC4 = hasC4;
+            enemy.carriedGrenades.clear();
             enemyCount++;
         }
 
@@ -1181,6 +1243,7 @@ namespace Cheat
         float lod1 = g_MenuData.performance.lodDistance1;
         float lod2 = g_MenuData.performance.lodDistance2;
 
+        // ===== 玩家 ESP =====
         for (const auto& enemy : snapEnemies) {
             vec2 screenFeet, screenHead;
             if (!WorldToScreen(enemy.position, screenFeet, snapVm.m)) continue;
@@ -1189,6 +1252,7 @@ namespace Cheat
             float width = height / 2.5f;
             float x = screenHead.x - width / 2;
             float y = screenHead.y;
+
             ImU32 boxColor, rayColor;
             if (enemy.isFriend) {
                 boxColor = IM_COL32(50, 100, 255, 255);
@@ -1198,15 +1262,25 @@ namespace Cheat
                 boxColor = enemy.isSpotted ? boxColorVisible : boxColorInvisible;
                 rayColor = enemy.isSpotted ? rayColorVisible : rayColorInvisible;
             }
+
+            // LOD 判断
             bool isFar = enemy.distance > lod2;
             bool isMid = enemy.distance > lod1 && enemy.distance <= lod2;
 
+            // 远距离：只画方框
             if (isFar && enableLOD) {
-                if (g_MenuData.bBoxESP) drawList->AddRect(ImVec2(x, y), ImVec2(x + width, y + height), boxColor, 0.0f, 0, 1.5f);
-                continue;
+                if (g_MenuData.bBoxESP) {
+                    drawList->AddRect(ImVec2(x, y), ImVec2(x + width, y + height), boxColor, 0.0f, 0, 1.5f);
+                }
+                // 携带投掷物即使在远处也显示在方框下
+                goto draw_carried_grenades;
             }
-            if (g_MenuData.bBoxESP) drawList->AddRect(ImVec2(x, y), ImVec2(x + width, y + height), boxColor, 0.0f, 0, 2.0f);
 
+            if (g_MenuData.bBoxESP) {
+                drawList->AddRect(ImVec2(x, y), ImVec2(x + width, y + height), boxColor, 0.0f, 0, 2.0f);
+            }
+
+            // 中距离：简化
             if (isMid && enableLOD) {
                 if (g_MenuData.bHealthESP) {
                     int barWidth = 4, barHeight = (int)height;
@@ -1219,9 +1293,10 @@ namespace Cheat
                     uint8_t healthG = (uint8_t)(255 * healthRatio);
                     drawList->AddRectFilled(ImVec2((float)barX, (float)healthY), ImVec2((float)(barX + barWidth), (float)(barY + barHeight)), IM_COL32(healthR, healthG, 0, 255));
                 }
-                continue;
+                goto draw_carried_grenades;
             }
 
+            // 近距离：完整绘制
             if (g_MenuData.bHealthESP) {
                 int barWidth = 4, barHeight = (int)height;
                 int barX = (int)x - 6, barY = (int)y;
@@ -1244,15 +1319,61 @@ namespace Cheat
             }
 
             if (g_MenuData.bRayESP) drawList->AddLine(ImVec2(static_cast<float>(WINDOW_W) / 2.0f, static_cast<float>(WINDOW_H)), ImVec2(screenFeet.x, screenFeet.y), rayColor, g_MenuData.RayThickness);
-            if (g_MenuData.bWeaponESP) drawList->AddText(ImVec2(x + width / 2 - 20, y - 18), textColor, enemy.weaponName.c_str());
+
+            if (g_MenuData.bWeaponESP) {
+                drawList->AddText(ImVec2(x + width / 2 - 20, y - 18), textColor, enemy.weaponName.c_str());
+            }
+
             if (g_MenuData.bDistanceESP) {
                 char dist[32];
                 snprintf(dist, sizeof(dist), "%.0fm", enemy.distance / 100.0f);
                 drawList->AddText(ImVec2(x + width / 2 - 10, y + height + 2), textColor, dist);
             }
+
             if (g_MenuData.bC4ESP && enemy.hasC4) {
                 drawList->AddText(ImVec2(x + width / 2 - 8, y - 32), c4Color, "C4");
                 drawList->AddCircleFilled(ImVec2(x + width / 2, y + height / 2), 5.0f, c4Color);
+            }
+
+        draw_carried_grenades:
+            // ★ 携带的投掷物：在方框底部依次向下排开
+            if (g_MenuData.bGrenadeESP && g_MenuData.bGrenadeCarried && !enemy.carriedGrenades.empty()) {
+                const float lineHeight = 16.0f;
+                const float startOffset = 4.0f;   // 距离方框底部的偏移
+
+                // 起始 y 从方框底部开始
+                float baseY = screenFeet.y + startOffset;
+
+                // 若开启了距离 ESP，距离文字会占据一点位置，往下挪
+                if (g_MenuData.bDistanceESP) baseY += 16.0f;
+
+                int index = 0;
+                for (const auto& gname : enemy.carriedGrenades) {
+                    float lineY = baseY + index * lineHeight;
+
+                    // 文本 "[携] 手雷"
+                    char label[64];
+                    const char* prefix = (g_MenuData.language == 0) ? "[C] " : "[携] ";
+                    snprintf(label, sizeof(label), "%s%s", prefix, gname.c_str());
+
+                    ImVec2 textSize = ImGui::CalcTextSize(label);
+
+                    // 居中对齐玩家方框
+                    float centerX = x + width / 2;
+                    ImVec2 textPos(centerX - textSize.x / 2, lineY);
+
+                    // 半透明黑底
+                    drawList->AddRectFilled(
+                        ImVec2(textPos.x - 3, textPos.y - 1),
+                        ImVec2(textPos.x + textSize.x + 3, textPos.y + textSize.y + 1),
+                        IM_COL32(0, 0, 0, 130), 2.0f
+                    );
+
+                    // 青色文字
+                    drawList->AddText(textPos, IM_COL32(120, 230, 230, 255), label);
+
+                    index++;
+                }
             }
         }
 
@@ -1311,7 +1432,7 @@ namespace Cheat
             }
         }
 
-        // ===== 投掷物 ESP =====
+        // ===== 投掷物 ESP（只绘制投掷出的） =====
         if (g_MenuData.bGrenadeESP) {
             if (g_MenuData.bGrenadeDebug) {
                 char dbg[160];
@@ -1333,8 +1454,8 @@ namespace Cheat
                 }
 
                 snprintf(dbg, sizeof(dbg),
-                    "GrenadeESP ON | tracked=%zu | total=%d gren=%d proj=%d | carried=%d thrown=%d",
-                    tracked, totalNames, grenadeNames, projectileNames, carriedCount, thrownCount);
+                    "GrenadeESP ON | tracked=%zu | total=%d gren=%d proj=%d | thrown=%d",
+                    tracked, totalNames, grenadeNames, projectileNames, thrownCount);
                 drawList->AddText(ImVec2(10, 40), IM_COL32(0, 255, 0, 255), dbg);
 
                 float yNew = 60.0f;
@@ -1353,53 +1474,54 @@ namespace Cheat
                 }
             }
 
-            for (const auto& g : snapGrenades) {
-                if (g.isThrown && !g_MenuData.bGrenadeThrown) continue;
-                if (!g.isThrown && !g_MenuData.bGrenadeCarried) continue;
+            if (g_MenuData.bGrenadeThrown) {
+                for (const auto& g : snapGrenades) {
+                    // 只画投掷出的
+                    if (!g.isThrown) continue;
 
-                vec3 displayPos = (g.isActive || !g.landingRecorded) ? g.position : g.landingPosition;
-                vec2 screenPos;
-                if (!WorldToScreen(displayPos, screenPos, snapVm.m)) continue;
+                    vec3 displayPos = (g.isActive || !g.landingRecorded) ? g.position : g.landingPosition;
+                    vec2 screenPos;
+                    if (!WorldToScreen(displayPos, screenPos, snapVm.m)) continue;
 
-                ImU32 color = GetGrenadeColor(g.type);
-                const char* name = GetGrenadeName(g.type);
-                const char* prefix = g.isThrown ? "" : (g_MenuData.language == 0 ? "[C] " : "[携] ");
+                    ImU32 color = GetGrenadeColor(g.type);
+                    const char* name = GetGrenadeName(g.type);
 
-                float alpha = 1.0f;
-                if (!g.isActive) {
-                    alpha = 1.0f - (g.disappearTimer / 1.5f);
-                    if (alpha < 0.0f) alpha = 0.0f;
-                    if (alpha > 1.0f) alpha = 1.0f;
-                }
-                int a = (color >> 24) & 0xFF;
-                int r = (color >> 0) & 0xFF;
-                int gg = (color >> 8) & 0xFF;
-                int b = (color >> 16) & 0xFF;
-                ImU32 fadedColor = IM_COL32(r, gg, b, static_cast<int>(a * alpha));
+                    float alpha = 1.0f;
+                    if (!g.isActive) {
+                        alpha = 1.0f - (g.disappearTimer / 1.5f);
+                        if (alpha < 0.0f) alpha = 0.0f;
+                        if (alpha > 1.0f) alpha = 1.0f;
+                    }
+                    int a = (color >> 24) & 0xFF;
+                    int r = (color >> 0) & 0xFF;
+                    int gg = (color >> 8) & 0xFF;
+                    int b = (color >> 16) & 0xFF;
+                    ImU32 fadedColor = IM_COL32(r, gg, b, static_cast<int>(a * alpha));
 
-                float dist = static_cast<float>(PlayerDistance(snapLocalEye, displayPos));
-                char label[64];
-                snprintf(label, sizeof(label), "%s%s %.0fm", prefix, name, dist / 100.0f);
+                    float dist = static_cast<float>(PlayerDistance(snapLocalEye, displayPos));
+                    char label[64];
+                    snprintf(label, sizeof(label), "%s %.0fm", name, dist / 100.0f);
 
-                ImVec2 textSize = ImGui::CalcTextSize(label);
-                ImVec2 textPos(screenPos.x - textSize.x / 2, screenPos.y - 32);
+                    ImVec2 textSize = ImGui::CalcTextSize(label);
+                    ImVec2 textPos(screenPos.x - textSize.x / 2, screenPos.y - 32);
 
-                drawList->AddRectFilled(
-                    ImVec2(textPos.x - 4, textPos.y - 2),
-                    ImVec2(textPos.x + textSize.x + 4, textPos.y + textSize.y + 2),
-                    IM_COL32(0, 0, 0, static_cast<int>(150 * alpha)), 3.0f
-                );
-                drawList->AddText(textPos, fadedColor, label);
+                    drawList->AddRectFilled(
+                        ImVec2(textPos.x - 4, textPos.y - 2),
+                        ImVec2(textPos.x + textSize.x + 4, textPos.y + textSize.y + 2),
+                        IM_COL32(0, 0, 0, static_cast<int>(150 * alpha)), 3.0f
+                    );
+                    drawList->AddText(textPos, fadedColor, label);
 
-                if (g.isActive) {
-                    drawList->AddCircleFilled(ImVec2(screenPos.x, screenPos.y), 4.0f, fadedColor);
-                    drawList->AddCircle(ImVec2(screenPos.x, screenPos.y), 8.0f, fadedColor, 16, 2.0f);
-                }
-                else {
-                    drawList->AddCircle(ImVec2(screenPos.x, screenPos.y), 10.0f, fadedColor, 20, 2.0f);
-                    drawList->AddCircle(ImVec2(screenPos.x, screenPos.y), 3.0f, fadedColor, 12, 1.5f);
-                    drawList->AddLine(ImVec2(screenPos.x - 14.0f, screenPos.y), ImVec2(screenPos.x + 14.0f, screenPos.y), fadedColor, 1.5f);
-                    drawList->AddLine(ImVec2(screenPos.x, screenPos.y - 14.0f), ImVec2(screenPos.x, screenPos.y + 14.0f), fadedColor, 1.5f);
+                    if (g.isActive) {
+                        drawList->AddCircleFilled(ImVec2(screenPos.x, screenPos.y), 4.0f, fadedColor);
+                        drawList->AddCircle(ImVec2(screenPos.x, screenPos.y), 8.0f, fadedColor, 16, 2.0f);
+                    }
+                    else {
+                        drawList->AddCircle(ImVec2(screenPos.x, screenPos.y), 10.0f, fadedColor, 20, 2.0f);
+                        drawList->AddCircle(ImVec2(screenPos.x, screenPos.y), 3.0f, fadedColor, 12, 1.5f);
+                        drawList->AddLine(ImVec2(screenPos.x - 14.0f, screenPos.y), ImVec2(screenPos.x + 14.0f, screenPos.y), fadedColor, 1.5f);
+                        drawList->AddLine(ImVec2(screenPos.x, screenPos.y - 14.0f), ImVec2(screenPos.x, screenPos.y + 14.0f), fadedColor, 1.5f);
+                    }
                 }
             }
         }

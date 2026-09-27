@@ -2,7 +2,7 @@
 #include <vector>
 #include <mutex>
 #include <string>
-#include  "..\..\imgui_d11\imgui.h"
+#include "..\..\imgui_d11\imgui.h"
 #include "../utils/math/vector.hpp"
 #include "../core/memory/memory.hpp"
 #include "../core/runtime_offsets.hpp"
@@ -13,7 +13,7 @@ extern uint32_t WIDTH, HEIGHT, WINDOW_W, WINDOW_H;
 struct viewMatrix { float m[16]; };
 
 struct EnemyInfo {
-    uintptr_t pawn = 0;                  // ★ 新增：entity 指针，用于 C4 携带判定
+    uintptr_t pawn = 0;
     vec3 position{};
     vec3 headPosition{};
     int32_t health = 100;
@@ -23,6 +23,7 @@ struct EnemyInfo {
     bool isSpotted = true;
     bool hasC4 = false;
     bool isFriend = false;
+    std::vector<std::string> carriedGrenades;   // ★ 新增：该玩家携带的投掷物显示名列表
 };
 
 struct LocalPlayerCache {
@@ -57,7 +58,6 @@ struct GrenadeInfo {
     bool isThrown = false;
 };
 
-// ★ 新增：掉落武器信息
 struct DroppedWeaponInfo {
     uintptr_t entity = 0;
     vec3 position{};
@@ -76,12 +76,12 @@ namespace Cheat
     extern vec3 aimTargetPosition;
     extern C4Info c4Info;
     extern std::vector<GrenadeInfo> grenades;
-    extern std::vector<DroppedWeaponInfo> droppedWeapons;   // ★ 新增
+    extern std::vector<DroppedWeaponInfo> droppedWeapons;
 
     bool Init(uintptr_t clientBase);
     void UpdateEntities();
     void UpdateGrenades();
-    void UpdateGroundItems();                               // ★ 新增
+    void UpdateGroundItems();
     void RunAimbot();
     void DrawESP(ImDrawList* drawList);
 
