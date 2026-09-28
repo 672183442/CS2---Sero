@@ -32,7 +32,9 @@ struct MenuData
     bool bGrenadeThrown = true;
     bool bGrenadeDebug = false;
     bool bRemoveFriends = true;
-
+    bool  bRadarRing = false;    // 雷达环
+    float fRadarRadius = 120.0f;   // 环半径（像素）
+   
     // Aim
     bool bAutoAim = false;
     float fAimSmooth = 1.0f;
@@ -44,7 +46,7 @@ struct MenuData
     int aimKey = 1;
     bool bVisibleAim = false;
     bool bAimFriends = false;
-
+    int aimHitbox = 0;   // 0=头 1=脖 2=胸 3=肚子
     // Other
     bool bAntiFlash = true;
     bool bFOVChanger = false;
@@ -59,7 +61,7 @@ struct MenuData
     ImVec4 GlowColor;
     ImVec4 GlowColorVisible;
     ImVec4 GlowColorInvisible;
-
+    bool bBunnyHop = false;
     // Colors
     ImVec4 AccentColor;
     ImVec4 AimLockColor;
@@ -76,7 +78,6 @@ struct MenuData
     float ItemSpacing = 8.0f;
     float FramePaddingX = 6.0f;
     float FramePaddingY = 5.0f;
-
     // Remote
     std::string versionInfo;
     std::string versionNumber;

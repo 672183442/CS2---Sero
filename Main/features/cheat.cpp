@@ -18,6 +18,7 @@ uint32_t HEIGHT = 1080;
 uint32_t WINDOW_W = 1920;
 uint32_t WINDOW_H = 1080;
 
+
 namespace Cheat
 {
     std::vector<EnemyInfo> enemies;
@@ -38,8 +39,9 @@ namespace Cheat
     static ULONGLONG g_lastThirdPersonHookAttempt = 0;
     using OnGlowTypeChangedFn = void(__fastcall*)(uintptr_t);
     static OnGlowTypeChangedFn g_onGlowTypeChanged = nullptr;
-    static bool g_glowCallbackResolved = false;
+    static ULONGLONG g_lastGlowCallbackAttempt = 0;
     static std::unordered_set<uintptr_t> g_glowingEntities;
+    static std::unordered_set<uintptr_t> g_glowNotified;
 
     static int frameCounter = 0;
     static int lastUpdateFrame = 0;
@@ -52,34 +54,23 @@ namespace Cheat
 
     static EnemyInfo enemyBuffer[64];
 
-    // ===== 调试变量 =====
-    static std::vector<std::string> g_debugEntityNames;
-    static size_t g_debugTrackedCount = 0;
-    static int g_debugUpdateCalls = 0;
-    static int g_debugTotalNames = 0;
-    static int g_debugGrenadeNames = 0;
-    static int g_debugProjectileNames = 0;
-    static int g_debugCarriedCount = 0;
-    static int g_debugThrownCount = 0;
-    static int g_debugDroppedWeaponCount = 0;
-    static uint32_t g_debugHighestIndex = 0;
-    static std::unordered_set<uintptr_t> g_prevFrameEntities;
-    static std::vector<std::pair<std::string, float>> g_recentNewEntities;
+    // ===== 调试信息 =====
+    std::mutex debugMutex;
+    std::vector<std::string> debugEntityList;
 
-    // ============================================================================
-    // 前置声明
-    // ============================================================================
     static uintptr_t ResolveEntityHandle(uintptr_t entityList, uint32_t handle);
     static bool TryGetEntityPosition(uintptr_t entity, vec3& position);
 
+    // ============================================================
+    // Glow
+    // ============================================================
     static bool ResolveGlowCallback() {
-        if (!g_glowCallbackResolved) {
-            g_glowCallbackResolved = true;
-            g_onGlowTypeChanged = reinterpret_cast<OnGlowTypeChangedFn>(Scanner::PatternScan(
-                "client.dll",
-                cs2_patterns::OnGlowTypeChanged
-            ));
-        }
+        if (g_onGlowTypeChanged) return true;
+        ULONGLONG now = GetTickCount64();
+        if (now - g_lastGlowCallbackAttempt < 2000) return false;
+        g_lastGlowCallbackAttempt = now;
+        g_onGlowTypeChanged = reinterpret_cast<OnGlowTypeChangedFn>(Scanner::PatternScan(
+            "client.dll", cs2_patterns::OnGlowTypeChanged));
         return g_onGlowTypeChanged != nullptr;
     }
 
@@ -103,39 +94,54 @@ namespace Cheat
     static bool SetEntityGlow(uintptr_t entity, bool enabled, const ImVec4& color) {
         namespace Glow = cs2_dumper::schemas::client_dll::CGlowProperty;
         constexpr int32_t playerGlowType = 3;
-        constexpr size_t glowPropertySize = 0x58;
+        constexpr size_t  glowPropertySize = 0x58;
 
         uintptr_t glowProperty = entity + cs2_dumper::schemas::client_dll::C_BaseModelEntity::m_Glow;
         if (!memory::IsWritable(glowProperty, glowPropertySize)) return false;
 
-        int32_t currentType = memory::Read<int32_t>(glowProperty + Glow::m_iGlowType);
-        bool currentGlowing = memory::Read<bool>(glowProperty + Glow::m_bGlowing);
+        int32_t  currentType = memory::Read<int32_t>(glowProperty + Glow::m_iGlowType);
+        uint32_t currentColor = memory::Read<uint32_t>(glowProperty + Glow::m_glowColorOverride);
 
         if (!enabled) {
-            memory::Write<int32_t>(glowProperty + Glow::m_iGlowType, 0);
-            if (currentType != 0 || currentGlowing) NotifyGlowChanged(glowProperty);
+            bool currentGlowing = memory::Read<bool>(glowProperty + Glow::m_bGlowing);
+            if (currentType == 0 && !currentGlowing) {
+                g_glowNotified.erase(glowProperty);
+                return true;
+            }
             memory::Write<bool>(glowProperty + Glow::m_bEligibleForScreenHighlight, false);
             memory::Write<bool>(glowProperty + Glow::m_bGlowing, false);
+            memory::Write<bool>(glowProperty + Glow::m_bFlashing, false);
+            memory::Write<int32_t>(glowProperty + Glow::m_iGlowType, 0);
+            memory::Write<uint32_t>(glowProperty + Glow::m_glowColorOverride, 0);
+            if (currentType != 0) NotifyGlowChanged(glowProperty);
+            g_glowNotified.erase(glowProperty);
             return true;
         }
 
         uint32_t packedColor = PackGlowColor(color);
-        uint32_t currentColor = memory::Read<uint32_t>(glowProperty + Glow::m_glowColorOverride);
-        bool needsRefresh = currentType != playerGlowType || currentColor != packedColor || !currentGlowing;
+        bool typeChanged = (currentType != playerGlowType);
+        bool colorChanged = (currentColor != packedColor);
+        bool notYetNotified = (g_glowNotified.find(glowProperty) == g_glowNotified.end());
 
-        memory::Write<float>(glowProperty + Glow::m_fGlowColor, color.x);
-        memory::Write<float>(glowProperty + Glow::m_fGlowColor + sizeof(float), color.y);
-        memory::Write<float>(glowProperty + Glow::m_fGlowColor + sizeof(float) * 2, color.z);
-        memory::Write<int32_t>(glowProperty + Glow::m_iGlowType, playerGlowType);
-        memory::Write<int32_t>(glowProperty + Glow::m_iGlowTeam, 0);
-        memory::Write<int32_t>(glowProperty + Glow::m_nGlowRange, 0);
-        memory::Write<int32_t>(glowProperty + Glow::m_nGlowRangeMin, 0);
-        memory::Write<uint32_t>(glowProperty + Glow::m_glowColorOverride, packedColor);
-        memory::Write<bool>(glowProperty + Glow::m_bFlashing, false);
-        memory::Write<bool>(glowProperty + Glow::m_bEligibleForScreenHighlight, true);
         memory::Write<bool>(glowProperty + Glow::m_bGlowing, true);
+        memory::Write<bool>(glowProperty + Glow::m_bEligibleForScreenHighlight, true);
+        memory::Write<bool>(glowProperty + Glow::m_bFlashing, false);
 
-        if (needsRefresh) NotifyGlowChanged(glowProperty);
+        if (typeChanged) {
+            memory::Write<int32_t>(glowProperty + Glow::m_iGlowType, playerGlowType);
+        }
+
+        if (notYetNotified) {
+            memory::Write<int32_t>(glowProperty + Glow::m_iGlowTeam, 0);
+            memory::Write<int32_t>(glowProperty + Glow::m_nGlowRange, 0);
+            memory::Write<int32_t>(glowProperty + Glow::m_nGlowRangeMin, 0);
+            memory::Write<uint32_t>(glowProperty + Glow::m_glowColorOverride, packedColor);
+            NotifyGlowChanged(glowProperty);
+            g_glowNotified.insert(glowProperty);
+        }
+        else if (colorChanged) {
+            memory::Write<uint32_t>(glowProperty + Glow::m_glowColorOverride, packedColor);
+        }
         return true;
     }
 
@@ -149,6 +155,7 @@ namespace Cheat
         c4Info = {};
         g_localSpottedBit = -1;
         g_glowingEntities.clear();
+        g_glowNotified.clear();
         grenades.clear();
         g_grenadeMap.clear();
         droppedWeapons.clear();
@@ -170,13 +177,11 @@ namespace Cheat
         if (!entity) return "";
         uintptr_t pIdentity = memory::Read<uintptr_t>(entity + 0x10);
         if (!pIdentity || pIdentity < 0x10000) return "";
-
         const uintptr_t kCandidates[] = { 0x20, 0x18, 0x28, 0x30, 0x10, 0x38, 0x40, 0x08, 0x48, 0x50 };
         for (uintptr_t off : kCandidates) {
             uintptr_t pString = memory::Read<uintptr_t>(pIdentity + off);
             if (!pString || pString < 0x10000) continue;
             if (pString > 0x00007FFFFFFFFFFFULL) continue;
-
             char buffer[96] = {};
             int validLen = 0;
             bool valid = true;
@@ -196,24 +201,69 @@ namespace Cheat
         return "";
     }
 
+    // ============================================================
+    // 调试信息：实时列出所有实体
+    // ============================================================
+    void UpdateDebugEntityList() {
+        std::vector<std::string> out;
+        out.reserve(256);
+
+        uintptr_t client = memory::clientBase;
+        if (!client) {
+            std::lock_guard<std::mutex> lock(debugMutex);
+            debugEntityList = std::move(out);
+            return;
+        }
+
+        uintptr_t entityList = memory::Read<uintptr_t>(client + cs2_dumper::offsets::client_dll::dwEntityList);
+        uintptr_t entitySystem = memory::Read<uintptr_t>(client + cs2_dumper::offsets::client_dll::dwGameEntitySystem);
+        if (!entityList || !entitySystem) {
+            std::lock_guard<std::mutex> lock(debugMutex);
+            debugEntityList = std::move(out);
+            return;
+        }
+
+        uint32_t highest = memory::Read<uint32_t>(
+            entitySystem + cs2_dumper::offsets::client_dll::dwGameEntitySystem_highestEntityIndex);
+        if (highest == 0 || highest > 0x10000) highest = 0;
+
+        uint32_t scanLimit = (highest < 4096) ? 4096 : highest;
+        if (scanLimit > 8192) scanLimit = 8192;
+
+        for (uint32_t i = 1; i <= scanLimit; ++i) {
+            uintptr_t listEntry = memory::Read<uintptr_t>(entityList + 0x10 + 0x8 * (i >> 9));
+            if (!listEntry) continue;
+
+            uintptr_t entity = memory::Read<uintptr_t>(listEntry + 0x70 * (i & 0x1FF));
+            if (!entity || entity < 0x10000) continue;
+
+            std::string name = GetEntityDesignName(entity);
+            if (name.empty()) name = "<unknown>";
+
+            int32_t health = memory::Read<int32_t>(
+                entity + cs2_dumper::schemas::client_dll::C_BaseEntity::m_iHealth);
+            uint8_t team = memory::Read<uint8_t>(
+                entity + cs2_dumper::schemas::client_dll::C_BaseEntity::m_iTeamNum);
+
+            char line[256];
+            snprintf(line, sizeof(line), "[%5u] 0x%p %s  HP=%d Team=%u",
+                i, (void*)entity, name.c_str(), health, team);
+            out.push_back(line);
+        }
+
+        std::lock_guard<std::mutex> lock(debugMutex);
+        debugEntityList = std::move(out);
+    }
+
     static int ClassifyGrenade(const std::string& designName, bool& isThrown) {
         isThrown = false;
         if (designName.empty()) return -1;
-
         std::string lower = designName;
         std::transform(lower.begin(), lower.end(), lower.begin(),
             [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-
-        if (lower.find("projectile") != std::string::npos) {
-            isThrown = true;
-        }
-        else if (lower.find("weapon_") != std::string::npos) {
-            isThrown = false;
-        }
-        else {
-            return -1;
-        }
-
+        if (lower.find("projectile") != std::string::npos) isThrown = true;
+        else if (lower.find("weapon_") != std::string::npos) isThrown = false;
+        else return -1;
         if (lower.find("hegrenade") != std::string::npos) return 0;
         if (lower.find("flashbang") != std::string::npos) return 1;
         if (lower.find("smokegrenade") != std::string::npos) return 2;
@@ -221,11 +271,9 @@ namespace Cheat
         if (lower.find("decoy") != std::string::npos) return 4;
         if (lower.find("incendiary") != std::string::npos || lower.find("incgrenade") != std::string::npos) return 5;
         if (lower.find("smoke") != std::string::npos) return 2;
-
         return -1;
     }
 
-    // ★ 新增：判断这个 weapon_xxx 是不是投掷物
     static bool IsGrenadeWeapon(const std::string& lower) {
         if (lower.empty()) return false;
         if (lower.find("hegrenade") != std::string::npos) return true;
@@ -249,7 +297,6 @@ namespace Cheat
         default: return "Grenade";
         }
     }
-
     static const char* GetGrenadeNameCN(int type) {
         switch (type) {
         case 0: return "手雷";
@@ -261,17 +308,14 @@ namespace Cheat
         default: return "投掷物";
         }
     }
-
     static const char* GetGrenadeName(int type) {
         return g_MenuData.language == 0 ? GetGrenadeNameEN(type) : GetGrenadeNameCN(type);
     }
 
-    // ★ 新增：从 design name 直接翻译成友好名字
     static std::string GetGrenadeDisplayName(const std::string& lowerName) {
         bool isThrownDummy = false;
         int type = ClassifyGrenade(lowerName, isThrownDummy);
         if (type < 0) {
-            // 兜底：尝试直接判断
             if (lowerName.find("hegrenade") != std::string::npos) type = 0;
             else if (lowerName.find("flashbang") != std::string::npos) type = 1;
             else if (lowerName.find("smokegrenade") != std::string::npos || lowerName.find("smoke") != std::string::npos) type = 2;
@@ -298,111 +342,39 @@ namespace Cheat
     void UpdateGrenades() {
         uintptr_t client = memory::clientBase;
         if (!client) return;
-
-        uintptr_t entitySystem = memory::Read<uintptr_t>(
-            client + cs2_dumper::offsets::client_dll::dwGameEntitySystem);
+        uintptr_t entitySystem = memory::Read<uintptr_t>(client + cs2_dumper::offsets::client_dll::dwGameEntitySystem);
         if (!entitySystem) return;
-
-        uint32_t highestIndex = memory::Read<uint32_t>(
-            entitySystem + cs2_dumper::offsets::client_dll::dwGameEntitySystem_highestEntityIndex);
+        uint32_t highestIndex = memory::Read<uint32_t>(entitySystem + cs2_dumper::offsets::client_dll::dwGameEntitySystem_highestEntityIndex);
         if (highestIndex > 0x10000) highestIndex = 0;
-
-        g_debugHighestIndex = highestIndex;
-
         uint32_t scanLimit = highestIndex;
         if (scanLimit < 2048) scanLimit = 2048;
         if (scanLimit > 8192) scanLimit = 8192;
-
-        uintptr_t entityList = memory::Read<uintptr_t>(
-            client + cs2_dumper::offsets::client_dll::dwEntityList);
+        uintptr_t entityList = memory::Read<uintptr_t>(client + cs2_dumper::offsets::client_dll::dwEntityList);
         if (!entityList) return;
-
         float deltaTime = ImGui::GetIO().DeltaTime;
         if (deltaTime <= 0.0f || deltaTime > 0.5f) deltaTime = 0.016f;
-
         std::unordered_set<uintptr_t> foundEntities;
-
-        bool debugEnabled = g_MenuData.bGrenadeDebug;
-        float now = ImGui::GetTime();
-
-        std::vector<std::string> debugNames;
-        std::unordered_set<uintptr_t> currentFrameEntities;
-        int totalNames = 0, grenadeNames = 0, projectileNames = 0;
-        int carriedCount = 0, thrownCount = 0;
-
-        if (debugEnabled) {
-            auto it = g_recentNewEntities.begin();
-            while (it != g_recentNewEntities.end()) {
-                if (now - it->second > 5.0f) it = g_recentNewEntities.erase(it);
-                else ++it;
-            }
-            debugNames.reserve(64);
-            g_debugUpdateCalls++;
-        }
 
         for (uint32_t i = 1; i <= scanLimit; ++i) {
             uintptr_t listEntry = memory::Read<uintptr_t>(entityList + 0x10 + 0x8 * (i >> 9));
             if (!listEntry) continue;
-
             uintptr_t entity = memory::Read<uintptr_t>(listEntry + 0x70 * (i & 0x1FF));
             if (!entity || entity < 0x10000) continue;
-
             std::string designName = GetEntityDesignName(entity);
             if (designName.empty()) continue;
-
             bool isThrown = false;
             int type = ClassifyGrenade(designName, isThrown);
-
-            if (debugEnabled) {
-                totalNames++;
-                currentFrameEntities.insert(entity);
-
-                if (g_prevFrameEntities.find(entity) == g_prevFrameEntities.end()) {
-                    char newLine[160];
-                    snprintf(newLine, sizeof(newLine), "[%u] %s", i, designName.c_str());
-                    g_recentNewEntities.push_back({ std::string(newLine), now });
-                }
-
-                std::string lowerDbg = designName;
-                std::transform(lowerDbg.begin(), lowerDbg.end(), lowerDbg.begin(),
-                    [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-                if (lowerDbg.find("grenade") != std::string::npos) grenadeNames++;
-                if (lowerDbg.find("projectile") != std::string::npos) projectileNames++;
-
-                bool skip =
-                    lowerDbg == "cs_player_controller" ||
-                    lowerDbg == "cs_player_manager" ||
-                    lowerDbg == "cs_team_manager" ||
-                    lowerDbg == "cs_gamerules" ||
-                    lowerDbg == "vote_controller";
-
-                if (!skip && debugNames.size() < 60) {
-                    char line[160];
-                    snprintf(line, sizeof(line), "[%u] %s", i, designName.c_str());
-                    debugNames.push_back(line);
-                }
-            }
-
             if (type < 0) continue;
-
-            // ★ 携带的投掷物不在这里处理（由 UpdateGroundItems 处理）
             if (!isThrown) continue;
-
             if (!g_MenuData.bGrenadeThrown) continue;
-
-            thrownCount++;
 
             uintptr_t sceneNode = memory::Read<uintptr_t>(
                 entity + cs2_dumper::schemas::client_dll::C_BaseEntity::m_pGameSceneNode);
             if (!sceneNode) continue;
-
-            vec3 pos = memory::Read<vec3>(
-                sceneNode + cs2_dumper::schemas::client_dll::CGameSceneNode::m_vecAbsOrigin);
+            vec3 pos = memory::Read<vec3>(sceneNode + cs2_dumper::schemas::client_dll::CGameSceneNode::m_vecAbsOrigin);
             if (!std::isfinite(pos.x) || !std::isfinite(pos.y) || !std::isfinite(pos.z)) continue;
             if (std::abs(pos.x) > 100000.0f || std::abs(pos.y) > 100000.0f || std::abs(pos.z) > 100000.0f) continue;
-
             foundEntities.insert(entity);
-
             auto it = g_grenadeMap.find(entity);
             if (it == g_grenadeMap.end()) {
                 GrenadeInfo info;
@@ -423,23 +395,19 @@ namespace Cheat
                 float dy = pos.y - info.lastPosition.y;
                 float dz = pos.z - info.lastPosition.z;
                 float moved = std::sqrt(dx * dx + dy * dy + dz * dz);
-
                 info.lastPosition = info.position;
                 info.position = pos;
                 info.type = type;
                 info.isActive = true;
                 info.disappearTimer = 0.0f;
                 info.isThrown = true;
-
                 if (!info.landingRecorded && moved < 0.5f) {
                     info.landingPosition = pos;
                     info.landingRecorded = true;
                 }
             }
         }
-
         constexpr float LANDING_RETAIN_TIME = 1.5f;
-
         for (auto it = g_grenadeMap.begin(); it != g_grenadeMap.end();) {
             if (foundEntities.find(it->first) != foundEntities.end()) { ++it; continue; }
             GrenadeInfo& info = it->second;
@@ -460,40 +428,22 @@ namespace Cheat
             }
             ++it;
         }
-
         {
             std::lock_guard<std::mutex> lock(dataMutex);
             grenades.clear();
             grenades.reserve(g_grenadeMap.size());
             for (const auto& kv : g_grenadeMap) grenades.push_back(kv.second);
         }
-
-        if (debugEnabled) {
-            std::lock_guard<std::mutex> lock(dataMutex);
-            g_debugEntityNames = std::move(debugNames);
-            g_debugTrackedCount = g_grenadeMap.size();
-            g_debugTotalNames = totalNames;
-            g_debugGrenadeNames = grenadeNames;
-            g_debugProjectileNames = projectileNames;
-            g_debugCarriedCount = carriedCount;
-            g_debugThrownCount = thrownCount;
-            g_prevFrameEntities = std::move(currentFrameEntities);
-        }
     }
 
-    // ============================================================================
-    // 掉落武器 + C4 携带/掉落 + 玩家携带的投掷物
-    // ============================================================================
     void UpdateGroundItems() {
         bool needDroppedWeapons = g_MenuData.bWeaponESP;
         bool needC4 = g_MenuData.bC4ESP;
         bool needCarriedGrenades = g_MenuData.bGrenadeESP && g_MenuData.bGrenadeCarried;
-
         if (!needDroppedWeapons && !needC4 && !needCarriedGrenades) {
             std::lock_guard<std::mutex> lock(dataMutex);
             droppedWeapons.clear();
             g_droppedWeaponMap.clear();
-            g_debugDroppedWeaponCount = 0;
             if (!c4Info.isPlanted) {
                 c4Info.exists = false;
                 c4Info.isCarried = false;
@@ -507,56 +457,38 @@ namespace Cheat
             }
             return;
         }
-
         uintptr_t client = memory::clientBase;
         if (!client) return;
-
-        uintptr_t entityList = memory::Read<uintptr_t>(
-            client + cs2_dumper::offsets::client_dll::dwEntityList);
+        uintptr_t entityList = memory::Read<uintptr_t>(client + cs2_dumper::offsets::client_dll::dwEntityList);
         if (!entityList) return;
-
-        uintptr_t entitySystem = memory::Read<uintptr_t>(
-            client + cs2_dumper::offsets::client_dll::dwGameEntitySystem);
+        uintptr_t entitySystem = memory::Read<uintptr_t>(client + cs2_dumper::offsets::client_dll::dwGameEntitySystem);
         uint32_t highest = 0;
         if (entitySystem) {
-            highest = memory::Read<uint32_t>(
-                entitySystem + cs2_dumper::offsets::client_dll::dwGameEntitySystem_highestEntityIndex);
+            highest = memory::Read<uint32_t>(entitySystem + cs2_dumper::offsets::client_dll::dwGameEntitySystem_highestEntityIndex);
         }
         if (highest < 4096) highest = 4096;
         if (highest > 8192) highest = 8192;
-
         std::unordered_set<uintptr_t> foundDropped;
-
-        // ★ 携带的投掷物：pawn -> vector<显示名>
         std::unordered_map<uintptr_t, std::vector<std::string>> carriedGrenadeMap;
-
         bool foundCarriedC4 = false;
         uintptr_t carriedC4Owner = 0;
         vec3 carriedC4Pos = { 0,0,0 };
         bool foundDroppedC4 = false;
         vec3 droppedC4Pos = { 0,0,0 };
-
         for (uint32_t i = 1; i <= highest; ++i) {
             uintptr_t listEntry = memory::Read<uintptr_t>(entityList + 0x10 + 0x8 * (i >> 9));
             if (!listEntry) continue;
-
             uintptr_t entity = memory::Read<uintptr_t>(listEntry + 0x70 * (i & 0x1FF));
             if (!entity || entity < 0x10000) continue;
-
             std::string designName = GetEntityDesignName(entity);
             if (designName.empty()) continue;
-
             std::string lower = designName;
             std::transform(lower.begin(), lower.end(), lower.begin(),
                 [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-
             if (lower.find("weapon_") != 0) continue;
-
             uint32_t ownerHandle = memory::Read<uint32_t>(
                 entity + cs2_dumper::schemas::client_dll::C_BaseEntity::m_hOwnerEntity);
             bool isDropped = (ownerHandle == 0xFFFFFFFF || ownerHandle == 0);
-
-            // ============ C4 特殊处理 ============
             if (lower.find("weapon_c4") != std::string::npos) {
                 if (needC4) {
                     if (isDropped) {
@@ -584,8 +516,6 @@ namespace Cheat
                 }
                 continue;
             }
-
-            // ============ 掉落武器 ============
             if (isDropped) {
                 if (needDroppedWeapons) {
                     uintptr_t sceneNode = memory::Read<uintptr_t>(
@@ -595,16 +525,13 @@ namespace Cheat
                         sceneNode + cs2_dumper::schemas::client_dll::CGameSceneNode::m_vecAbsOrigin);
                     if (!std::isfinite(pos.x) || !std::isfinite(pos.y) || !std::isfinite(pos.z)) continue;
                     if (std::abs(pos.x) > 100000.0f || std::abs(pos.y) > 100000.0f || std::abs(pos.z) > 100000.0f) continue;
-
                     uintptr_t attrMgr = entity + cs2_dumper::schemas::client_dll::C_EconEntity::m_AttributeManager;
                     uint16_t itemDef = memory::Read<uint16_t>(
                         attrMgr
                         + cs2_dumper::schemas::client_dll::C_AttributeContainer::m_Item
                         + cs2_dumper::schemas::client_dll::C_EconItemView::m_iItemDefinitionIndex);
                     std::string weaponName = GetWeaponNameCached(itemDef);
-
                     foundDropped.insert(entity);
-
                     DroppedWeaponInfo info;
                     info.entity = entity;
                     info.position = pos;
@@ -614,7 +541,6 @@ namespace Cheat
                     g_droppedWeaponMap[entity] = info;
                 }
             }
-            // ============ 携带的投掷物 ============
             else {
                 if (needCarriedGrenades && IsGrenadeWeapon(lower)) {
                     uintptr_t owner = ResolveEntityHandle(entityList, ownerHandle);
@@ -627,24 +553,17 @@ namespace Cheat
                 }
             }
         }
-
         for (auto it = g_droppedWeaponMap.begin(); it != g_droppedWeaponMap.end();) {
             if (foundDropped.find(it->first) == foundDropped.end()) {
                 it = g_droppedWeaponMap.erase(it);
             }
             else ++it;
         }
-
         {
             std::lock_guard<std::mutex> lock(dataMutex);
-
-            // 掉落武器
             droppedWeapons.clear();
             droppedWeapons.reserve(g_droppedWeaponMap.size());
             for (const auto& kv : g_droppedWeaponMap) droppedWeapons.push_back(kv.second);
-            g_debugDroppedWeaponCount = (int)droppedWeapons.size();
-
-            // C4 状态
             if (!c4Info.isPlanted) {
                 if (foundCarriedC4) {
                     c4Info.exists = true;
@@ -668,18 +587,11 @@ namespace Cheat
                     c4Info.position = { 0,0,0 };
                 }
             }
-
-            // 每个玩家的携带投掷物 + hasC4
             for (auto& e : enemies) {
                 e.hasC4 = c4Info.isCarried && c4Info.carrierPawn != 0 && e.pawn == c4Info.carrierPawn;
-
                 auto it = carriedGrenadeMap.find(e.pawn);
-                if (it != carriedGrenadeMap.end()) {
-                    e.carriedGrenades = it->second;
-                }
-                else {
-                    e.carriedGrenades.clear();
-                }
+                if (it != carriedGrenadeMap.end()) e.carriedGrenades = it->second;
+                else e.carriedGrenades.clear();
             }
         }
     }
@@ -951,9 +863,15 @@ namespace Cheat
                 ImVec4 glowColor = g_MenuData.bGlowSeparateColors
                     ? (isSpotted ? g_MenuData.GlowColorVisible : g_MenuData.GlowColorInvisible)
                     : g_MenuData.GlowColor;
-                if (SetEntityGlow(entity, true, glowColor)) g_glowingEntities.insert(entity);
+                if (SetEntityGlow(entity, true, glowColor)) {
+                    g_glowingEntities.insert(entity);
+                }
             }
-            else if (g_glowingEntities.erase(entity) > 0) SetEntityGlow(entity, false, {});
+            else {
+                if (g_glowingEntities.erase(entity) > 0) {
+                    SetEntityGlow(entity, false, ImVec4{ 0.0f, 0.0f, 0.0f, 0.0f });
+                }
+            }
 
             if (health <= 0) continue;
 
@@ -1012,7 +930,7 @@ namespace Cheat
 
         for (auto it = g_glowingEntities.begin(); it != g_glowingEntities.end();) {
             if (seenPlayerEntities.find(*it) == seenPlayerEntities.end()) {
-                SetEntityGlow(*it, false, {});
+                SetEntityGlow(*it, false, ImVec4{ 0.0f, 0.0f, 0.0f, 0.0f });
                 it = g_glowingEntities.erase(it);
             }
             else ++it;
@@ -1043,6 +961,10 @@ namespace Cheat
 
         UpdateGrenades();
         UpdateGroundItems();
+
+        if (g_MenuData.bGrenadeDebug) {
+            UpdateDebugEntityList();
+        }
     }
 
     void RunAimbot() {
@@ -1059,6 +981,7 @@ namespace Cheat
         vec2 bestAngle = { 0.0f, 0.0f };
         bool found = false;
         vec3 targetPos = { 0,0,0 };
+        float targetDist = 0.0f;   // ← 加这一行
         uintptr_t entityList = memory::Read<uintptr_t>(memory::clientBase + cs2_dumper::offsets::client_dll::dwEntityList);
         if (!entityList) return;
         uint8_t myTeam = memory::Read<uint8_t>(localPlayer.pawn + cs2_dumper::schemas::client_dll::C_BaseEntity::m_iTeamNum);
@@ -1091,33 +1014,64 @@ namespace Cheat
             if (movementServices) duckAmount = memory::Read<float>(movementServices + cs2_dumper::schemas::client_dll::CCSPlayer_MovementServices::m_flDuckAmount);
             vec3 headPos = feetPos + viewOffset;
             headPos.z -= duckAmount * viewOffset.z * 0.6f;
-            vec2 aim = CalcAngle(eyePos, headPos);
+
+            // ---- 根据菜单选择计算瞄准点 ----
+            float ratio = 1.0f;   // 相对于 viewOffset 的比例，1.0 = 头
+            switch (g_MenuData.aimHitbox) {
+            case 0: ratio = 1.00f; break; // 头
+            case 1: ratio = 0.90f; break; // 脖子
+            case 2: ratio = 0.75f; break; // 胸
+            case 3: ratio = 0.55f; break; // 肚子
+            default: ratio = 1.00f; break;
+            }
+
+            vec3 aimPoint;
+            if (ratio >= 1.0f) {
+                aimPoint = headPos;
+            }
+            else {
+                aimPoint = feetPos + viewOffset * ratio;
+                aimPoint.z -= duckAmount * viewOffset.z * 0.6f * ratio;
+            }
+
+            vec2 aim = CalcAngle(eyePos, aimPoint);
             float fov = GetFOV(viewAngle, aim);
-            if (fov < bestFOV) { bestFOV = fov; bestAngle = aim; targetPos = headPos; found = true; }
+            if (fov < bestFOV) {
+                bestFOV = fov;
+                bestAngle = aim;
+                targetPos = aimPoint;
+                targetDist = static_cast<float>(PlayerDistance(eyePos, aimPoint));
+                found = true;
+            }
         }
 
         if (found) { hasAimTarget = true; aimTargetPosition = targetPos; }
         if (!found) return;
 
         if (g_MenuData.bSilentAim) {
-            if (!g_SilentAimHookReady) {
-                vec3 compensatedAngle = { bestAngle.x, bestAngle.y, 0.0f };
-                uintptr_t aimPunchServices = memory::Read<uintptr_t>(localPlayer.pawn + cs2_dumper::schemas::client_dll::C_CSPlayerPawn::m_pAimPunchServices);
-                if (aimPunchServices && memory::IsReadable(aimPunchServices, sizeof(vec3))) {
-                    vec3 aimPunch = memory::Read<vec3>(aimPunchServices + cs2_dumper::schemas::client_dll::CCSPlayer_AimPunchServices::m_predictableBaseAngle);
-                    compensatedAngle.x -= aimPunch.x * 2.0f;
-                    compensatedAngle.y -= aimPunch.y * 2.0f;
-                }
-                uintptr_t csgoInput = memory::clientBase + cs2_dumper::offsets::client_dll::dwCSGOInput;
-                const uintptr_t inputAnglesOffset = cs2_runtime::layouts::CCSGOInput_m_angViewAngles;
-                if (memory::IsReadable(csgoInput + inputAnglesOffset, sizeof(vec3))) {
-                    if (compensatedAngle.x > 89.0f) compensatedAngle.x = 89.0f;
-                    if (compensatedAngle.x < -89.0f) compensatedAngle.x = -89.0f;
-                    compensatedAngle.y = NormalizeAngle(compensatedAngle.y);
-                    memory::Write<float>(csgoInput + inputAnglesOffset, compensatedAngle.x);
-                    memory::Write<float>(csgoInput + inputAnglesOffset + sizeof(float), compensatedAngle.y);
-                }
+            vec3 compensatedAngle = { bestAngle.x, bestAngle.y, 0.0f };
+
+            // 后坐力补偿
+            uintptr_t aimPunchServices = memory::Read<uintptr_t>(
+                localPlayer.pawn + cs2_dumper::schemas::client_dll::C_CSPlayerPawn::m_pAimPunchServices);
+            if (aimPunchServices && memory::IsReadable(aimPunchServices, sizeof(vec3))) {
+                vec3 aimPunch = memory::Read<vec3>(
+                    aimPunchServices + cs2_dumper::schemas::client_dll::CCSPlayer_AimPunchServices::m_predictableBaseAngle);
+                compensatedAngle.x -= aimPunch.x * 2.0f;
+                compensatedAngle.y -= aimPunch.y * 2.0f;
             }
+
+            if (compensatedAngle.x > 89.0f) compensatedAngle.x = 89.0f;
+            if (compensatedAngle.x < -89.0f) compensatedAngle.x = -89.0f;
+            compensatedAngle.y = NormalizeAngle(compensatedAngle.y);
+
+            // 直接写视角角度 = 瞬锁（服务器视作本地瞄准）
+            memory::Write<float>(
+                memory::clientBase + cs2_dumper::offsets::client_dll::dwViewAngles,
+                compensatedAngle.x);
+            memory::Write<float>(
+                memory::clientBase + cs2_dumper::offsets::client_dll::dwViewAngles + 0x4,
+                compensatedAngle.y);
         }
         else {
             vec2 compensatedTarget = bestAngle;
@@ -1163,21 +1117,48 @@ namespace Cheat
         }
     }
 
+    // ============================================================
+    // Bunny Hop
+    // ============================================================
+    void RunBunnyHop() {
+        if (!g_MenuData.bBunnyHop) return;
+
+        uintptr_t client = memory::clientBase;
+        if (!client) return;
+
+        uintptr_t localPawn = memory::Read<uintptr_t>(
+            client + cs2_dumper::offsets::client_dll::dwLocalPlayerPawn);
+        if (!localPawn) return;
+
+        int32_t health = memory::Read<int32_t>(
+            localPawn + cs2_dumper::schemas::client_dll::C_BaseEntity::m_iHealth);
+        if (health <= 0) return;
+
+        constexpr uintptr_t kButtonJump = 0x22305D0;          // buttons::jump
+        constexpr uintptr_t k_m_fFlags = 0x3F4;               // C_BaseEntity::m_fFlags
+
+        uintptr_t jumpBtnAddr = client + kButtonJump;
+
+        static bool resetPending = false;
+        if (resetPending) {
+            memory::Write<int32_t>(jumpBtnAddr, 256);
+            resetPending = false;
+        }
+
+        if (!(GetAsyncKeyState(VK_SPACE) & 0x8000)) return;
+
+        int32_t flags = memory::Read<int32_t>(localPawn + k_m_fFlags);
+        if (!(flags & 1)) return;
+
+        memory::Write<int32_t>(jumpBtnAddr, 65537);
+        resetPending = true;
+    }
+
+  
+ 
+
     void DrawESP(ImDrawList* drawList) {
         if (!drawList) return;
-
-        if (g_MenuData.bGrenadeDebug) {
-            char dbg[256];
-            snprintf(dbg, sizeof(dbg),
-                "DIAG: Main=%d Grn=%d UpdCalls=%d Tracked=%zu Hi=%u Drop=%d",
-                (int)g_MenuData.bMainESP,
-                (int)g_MenuData.bGrenadeESP,
-                g_debugUpdateCalls,
-                g_debugTrackedCount,
-                g_debugHighestIndex,
-                g_debugDroppedWeaponCount);
-            drawList->AddText(ImVec2(10, 10), IM_COL32(255, 0, 0, 255), dbg);
-        }
 
         if (!g_MenuData.bMainESP) return;
 
@@ -1220,6 +1201,8 @@ namespace Cheat
         viewMatrix snapVm;
         C4Info snapC4;
         vec3 snapLocalEye;
+        vec3 snapLocalPos;
+        vec2 snapLocalViewAngle;
         std::vector<GrenadeInfo> snapGrenades;
         std::vector<DroppedWeaponInfo> snapDroppedWeapons;
         {
@@ -1228,6 +1211,8 @@ namespace Cheat
             snapVm = vm;
             snapC4 = c4Info;
             snapLocalEye = localPlayer.eyePosition;
+            snapLocalPos = localPlayer.position;
+            snapLocalViewAngle = localPlayer.viewAngle;
             snapGrenades = grenades;
             snapDroppedWeapons = droppedWeapons;
         }
@@ -1238,12 +1223,105 @@ namespace Cheat
         ImU32 rayColorInvisible = IM_COL32((int)(g_MenuData.RayColorInvisible.x * 255), (int)(g_MenuData.RayColorInvisible.y * 255), (int)(g_MenuData.RayColorInvisible.z * 255), (int)(g_MenuData.RayColorInvisible.w * 255));
         ImU32 textColor = IM_COL32(255, 255, 255, 255);
         ImU32 c4Color = IM_COL32(255, 165, 0, 255);
+        // ============================================================
+// Radar Ring (准星雷达环)
+// ============================================================
+        if (g_MenuData.bRadarRing) {
+            const float cx = WINDOW_W / 2.0f;
+            const float cy = WINDOW_H / 2.0f;
+            const float radius = std::clamp(g_MenuData.fRadarRadius, 40.0f, 400.0f);
+            // 开启抗锯齿，让箭头/圆点边缘平滑
+            drawList->Flags |= ImDrawListFlags_AntiAliasedFill | ImDrawListFlags_AntiAliasedLines;
+            drawList->AddCircle(ImVec2(cx, cy), radius,
+                IM_COL32(255, 255, 255, 70), 64, 1.2f);
 
+            const float playerYaw = snapLocalViewAngle.y;
+
+            struct DirMark { const char* label; float worldYaw; ImU32 color; };
+            static const DirMark kDirs[] = {
+                { "N",  90.0f, IM_COL32(255, 200,  80, 240) }, // 北 (+Y)
+                { "E",   0.0f, IM_COL32(140, 220, 255, 240) }, // 东 (+X)
+                { "S", -90.0f, IM_COL32(255, 140, 140, 240) }, // 南 (-Y)
+                { "W", 180.0f, IM_COL32(180, 255, 180, 240) }, // 西 (-X)
+            };
+
+            ImFont* dirFont = ImGui::GetFont();
+            const float dirFontSize = ImGui::GetFontSize() * 1.15f;
+            const float dirTextOffset = 14.0f; // 字母离圆环的距离
+
+            for (const auto& d : kDirs) {
+                float relative = NormalizeAngle(d.worldYaw - playerYaw);
+                float rad = relative * (3.14159265f / 180.0f);
+
+                // 放在圆环外侧一点
+                float px = cx - (radius + dirTextOffset) * std::sin(rad);
+                float py = cy - (radius + dirTextOffset) * std::cos(rad);
+
+                ImVec2 ts = dirFont->CalcTextSizeA(dirFontSize, FLT_MAX, 0.0f, d.label);
+                ImVec2 tp(px - ts.x * 0.5f, py - ts.y * 0.5f);
+
+                // 黑色阴影打底，保证任何背景都看得清
+                drawList->AddText(dirFont, dirFontSize,
+                    ImVec2(tp.x + 1.0f, tp.y + 1.0f),
+                    IM_COL32(0, 0, 0, 220), d.label);
+                drawList->AddText(dirFont, dirFontSize, tp, d.color, d.label);
+
+                // 环上刻一个小点，让方向和环的位置对应更清楚
+                float rx = cx - radius * std::sin(rad);
+                float ry = cy - radius * std::cos(rad);
+                drawList->AddCircleFilled(ImVec2(rx, ry), 3.0f, d.color, 12);
+            }
+            for (const auto& enemy : snapEnemies) {
+                float dx = enemy.position.x - snapLocalPos.x;
+                float dy = enemy.position.y - snapLocalPos.y;
+                if (std::abs(dx) < 0.1f && std::abs(dy) < 0.1f) continue;
+
+                // 世界坐标指向敌人的 yaw
+                float enemyYaw = std::atan2(dy, dx) * (180.0f / 3.14159265f);
+                float relative = NormalizeAngle(enemyYaw - playerYaw);
+
+                // 屏幕圆周上的位置
+                float rad = relative * (3.14159265f / 180.0f);
+                float px = cx - radius * std::sin(rad);
+                float py = cy - radius * std::cos(rad);
+
+                // 颜色
+                ImU32 markerColor;
+                if (enemy.isFriend) {
+                    markerColor = IM_COL32(80, 140, 255, 255);
+                }
+                else if (enemy.isSpotted) {
+                    markerColor = IM_COL32(80, 255, 80, 255);
+                }
+                else {
+                    markerColor = IM_COL32(255, 80, 80, 255);
+                }
+
+                // 指向外侧的小箭头
+                float dirX = (px - cx) / radius;
+                float dirY = (py - cy) / radius;
+                float perpX = -dirY;
+                float perpY = dirX;
+
+                constexpr float arrowLen = 13.0f;
+                constexpr float arrowBase = 7.0f;
+
+                ImVec2 tip(px + dirX * arrowLen, py + dirY * arrowLen);
+                ImVec2 left(px - perpX * arrowBase, py - perpY * arrowBase);
+                ImVec2 right(px + perpX * arrowBase, py + perpY * arrowBase);
+
+                // 用线画 V 形箭头（比填充三角形平滑得多）
+                drawList->AddLine(left, tip, markerColor, 2.0f);
+                drawList->AddLine(right, tip, markerColor, 2.0f);
+
+                // 中心圆点
+                drawList->AddCircleFilled(ImVec2(px, py), 3.5f, markerColor, 16);
+            }
+        }
         bool enableLOD = g_MenuData.performance.enableLOD;
         float lod1 = g_MenuData.performance.lodDistance1;
         float lod2 = g_MenuData.performance.lodDistance2;
 
-        // ===== 玩家 ESP =====
         for (const auto& enemy : snapEnemies) {
             vec2 screenFeet, screenHead;
             if (!WorldToScreen(enemy.position, screenFeet, snapVm.m)) continue;
@@ -1263,16 +1341,13 @@ namespace Cheat
                 rayColor = enemy.isSpotted ? rayColorVisible : rayColorInvisible;
             }
 
-            // LOD 判断
             bool isFar = enemy.distance > lod2;
             bool isMid = enemy.distance > lod1 && enemy.distance <= lod2;
 
-            // 远距离：只画方框
             if (isFar && enableLOD) {
                 if (g_MenuData.bBoxESP) {
                     drawList->AddRect(ImVec2(x, y), ImVec2(x + width, y + height), boxColor, 0.0f, 0, 1.5f);
                 }
-                // 携带投掷物即使在远处也显示在方框下
                 goto draw_carried_grenades;
             }
 
@@ -1280,7 +1355,6 @@ namespace Cheat
                 drawList->AddRect(ImVec2(x, y), ImVec2(x + width, y + height), boxColor, 0.0f, 0, 2.0f);
             }
 
-            // 中距离：简化
             if (isMid && enableLOD) {
                 if (g_MenuData.bHealthESP) {
                     int barWidth = 4, barHeight = (int)height;
@@ -1296,7 +1370,6 @@ namespace Cheat
                 goto draw_carried_grenades;
             }
 
-            // 近距离：完整绘制
             if (g_MenuData.bHealthESP) {
                 int barWidth = 4, barHeight = (int)height;
                 int barX = (int)x - 6, barY = (int)y;
@@ -1336,71 +1409,48 @@ namespace Cheat
             }
 
         draw_carried_grenades:
-            // ★ 携带的投掷物：在方框底部依次向下排开
             if (g_MenuData.bGrenadeESP && g_MenuData.bGrenadeCarried && !enemy.carriedGrenades.empty()) {
                 const float lineHeight = 16.0f;
-                const float startOffset = 4.0f;   // 距离方框底部的偏移
-
-                // 起始 y 从方框底部开始
+                const float startOffset = 4.0f;
                 float baseY = screenFeet.y + startOffset;
-
-                // 若开启了距离 ESP，距离文字会占据一点位置，往下挪
                 if (g_MenuData.bDistanceESP) baseY += 16.0f;
-
                 int index = 0;
                 for (const auto& gname : enemy.carriedGrenades) {
                     float lineY = baseY + index * lineHeight;
-
-                    // 文本 "[携] 手雷"
                     char label[64];
                     const char* prefix = (g_MenuData.language == 0) ? "[C] " : "[携] ";
                     snprintf(label, sizeof(label), "%s%s", prefix, gname.c_str());
-
                     ImVec2 textSize = ImGui::CalcTextSize(label);
-
-                    // 居中对齐玩家方框
                     float centerX = x + width / 2;
                     ImVec2 textPos(centerX - textSize.x / 2, lineY);
-
-                    // 半透明黑底
                     drawList->AddRectFilled(
                         ImVec2(textPos.x - 3, textPos.y - 1),
                         ImVec2(textPos.x + textSize.x + 3, textPos.y + textSize.y + 1),
                         IM_COL32(0, 0, 0, 130), 2.0f
                     );
-
-                    // 青色文字
                     drawList->AddText(textPos, IM_COL32(120, 230, 230, 255), label);
-
                     index++;
                 }
             }
         }
 
-        // ===== 掉落武器 ESP =====
         if (g_MenuData.bWeaponESP) {
             for (const auto& w : snapDroppedWeapons) {
                 vec2 screenPos;
                 if (!WorldToScreen(w.position, screenPos, snapVm.m)) continue;
-
                 float dist = static_cast<float>(PlayerDistance(snapLocalEye, w.position));
-
                 ImU32 color = IM_COL32(200, 200, 200, 255);
                 const char* prefix = g_MenuData.language == 0 ? "[G] " : "[地] ";
-
                 char label[80];
                 snprintf(label, sizeof(label), "%s%s %.0fm", prefix, w.weaponName.c_str(), dist / 100.0f);
-
                 ImVec2 textSize = ImGui::CalcTextSize(label);
                 ImVec2 textPos(screenPos.x - textSize.x / 2, screenPos.y - 22);
-
                 drawList->AddRectFilled(
                     ImVec2(textPos.x - 4, textPos.y - 2),
                     ImVec2(textPos.x + textSize.x + 4, textPos.y + textSize.y + 2),
                     IM_COL32(0, 0, 0, 150), 3.0f
                 );
                 drawList->AddText(textPos, color, label);
-
                 drawList->AddRect(
                     ImVec2(screenPos.x - 5.0f, screenPos.y - 5.0f),
                     ImVec2(screenPos.x + 5.0f, screenPos.y + 5.0f),
@@ -1409,7 +1459,6 @@ namespace Cheat
             }
         }
 
-        // ===== C4 ESP =====
         if (g_MenuData.bC4ESP) {
             if (snapC4.isPlanted) {
                 vec2 screenPos;
@@ -1432,60 +1481,15 @@ namespace Cheat
             }
         }
 
-        // ===== 投掷物 ESP（只绘制投掷出的） =====
         if (g_MenuData.bGrenadeESP) {
-            if (g_MenuData.bGrenadeDebug) {
-                char dbg[160];
-                size_t tracked = 0;
-                int totalNames = 0, grenadeNames = 0, projectileNames = 0;
-                int carriedCount = 0, thrownCount = 0;
-                std::vector<std::string> namesCopy;
-                std::vector<std::pair<std::string, float>> recentCopy;
-                {
-                    std::lock_guard<std::mutex> lock(dataMutex);
-                    tracked = g_debugTrackedCount;
-                    totalNames = g_debugTotalNames;
-                    grenadeNames = g_debugGrenadeNames;
-                    projectileNames = g_debugProjectileNames;
-                    carriedCount = g_debugCarriedCount;
-                    thrownCount = g_debugThrownCount;
-                    namesCopy = g_debugEntityNames;
-                    recentCopy = g_recentNewEntities;
-                }
-
-                snprintf(dbg, sizeof(dbg),
-                    "GrenadeESP ON | tracked=%zu | total=%d gren=%d proj=%d | thrown=%d",
-                    tracked, totalNames, grenadeNames, projectileNames, thrownCount);
-                drawList->AddText(ImVec2(10, 40), IM_COL32(0, 255, 0, 255), dbg);
-
-                float yNew = 60.0f;
-                for (const auto& pair : recentCopy) {
-                    std::string line = "NEW: " + pair.first;
-                    drawList->AddText(ImVec2(10, yNew), IM_COL32(0, 255, 255, 255), line.c_str());
-                    yNew += 18.0f;
-                    if (yNew > 300.0f) break;
-                }
-
-                float yOff = yNew + 5.0f;
-                for (const auto& line : namesCopy) {
-                    drawList->AddText(ImVec2(10, yOff), IM_COL32(255, 255, 0, 255), line.c_str());
-                    yOff += 18.0f;
-                    if (yOff > 900.0f) break;
-                }
-            }
-
             if (g_MenuData.bGrenadeThrown) {
                 for (const auto& g : snapGrenades) {
-                    // 只画投掷出的
                     if (!g.isThrown) continue;
-
                     vec3 displayPos = (g.isActive || !g.landingRecorded) ? g.position : g.landingPosition;
                     vec2 screenPos;
                     if (!WorldToScreen(displayPos, screenPos, snapVm.m)) continue;
-
                     ImU32 color = GetGrenadeColor(g.type);
                     const char* name = GetGrenadeName(g.type);
-
                     float alpha = 1.0f;
                     if (!g.isActive) {
                         alpha = 1.0f - (g.disappearTimer / 1.5f);
@@ -1497,21 +1501,17 @@ namespace Cheat
                     int gg = (color >> 8) & 0xFF;
                     int b = (color >> 16) & 0xFF;
                     ImU32 fadedColor = IM_COL32(r, gg, b, static_cast<int>(a * alpha));
-
                     float dist = static_cast<float>(PlayerDistance(snapLocalEye, displayPos));
                     char label[64];
                     snprintf(label, sizeof(label), "%s %.0fm", name, dist / 100.0f);
-
                     ImVec2 textSize = ImGui::CalcTextSize(label);
                     ImVec2 textPos(screenPos.x - textSize.x / 2, screenPos.y - 32);
-
                     drawList->AddRectFilled(
                         ImVec2(textPos.x - 4, textPos.y - 2),
                         ImVec2(textPos.x + textSize.x + 4, textPos.y + textSize.y + 2),
                         IM_COL32(0, 0, 0, static_cast<int>(150 * alpha)), 3.0f
                     );
                     drawList->AddText(textPos, fadedColor, label);
-
                     if (g.isActive) {
                         drawList->AddCircleFilled(ImVec2(screenPos.x, screenPos.y), 4.0f, fadedColor);
                         drawList->AddCircle(ImVec2(screenPos.x, screenPos.y), 8.0f, fadedColor, 16, 2.0f);
@@ -1593,6 +1593,8 @@ namespace Cheat
     int64_t SilentAimHook(int* a1, int64_t a2, char a3, int64_t arg1, int64_t arg2, int64_t arg3) {
         __try {
             if (!a1) return ((SilentAimFunc)g_SilentAimOrigin)(a1, a2, a3, arg1, arg2, arg3);
+
+
             if (!a3) return ((SilentAimFunc)g_SilentAimOrigin)(a1, a2, a3, arg1, arg2, arg3);
             bool silentAimEnabled = g_MenuData.bSilentAim;
             bool visibleAim = g_MenuData.bVisibleAim;
@@ -1731,4 +1733,5 @@ namespace Cheat
         g_ThirdPersonProgress = 0.0f;
         g_ThirdPersonHookReady = false;
     }
-}
+
+} // namespace Cheat

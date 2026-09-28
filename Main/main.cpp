@@ -52,6 +52,7 @@ static bool __declspec(nothrow) RunCheatLogicSafe()
             if (drawList) Cheat::DrawESP(drawList);
         }
         Cheat::RunAimbot();
+        Cheat::RunBunnyHop();   // ← 新增
         return true;
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {
@@ -207,6 +208,8 @@ long __stdcall my_present(IDXGISwapChain* _this, UINT a, UINT b)
                 if (!font) io.Fonts->AddFontDefault();
             }
 
+
+
             inited = true;
             initFrameCount = 0;
             espReady = false;
@@ -216,6 +219,8 @@ long __stdcall my_present(IDXGISwapChain* _this, UINT a, UINT b)
             LeaveCriticalSection(&presentCriticalSection);
             return CallOriginalPresent(_this, a, b);
         }
+
+
 
         // ★ 右 Shift 边缘检测切换菜单
         {
@@ -233,12 +238,10 @@ long __stdcall my_present(IDXGISwapChain* _this, UINT a, UINT b)
             float dt = ImGui::GetIO().DeltaTime;
             if (dt <= 0.0f || dt > 0.2f) dt = 0.016f;
 
-            // 指数平滑（速度快，~0.18 秒完成过渡）
             float speed = 18.0f;
             float t = 1.0f - expf(-speed * dt);
             g_UIState.menuScale += (target - g_UIState.menuScale) * t;
 
-            // 收尾夹紧
             if (g_UIState.menuScale < 0.005f) g_UIState.menuScale = 0.0f;
             if (g_UIState.menuScale > 0.995f) g_UIState.menuScale = 1.0f;
         }
@@ -247,11 +250,9 @@ long __stdcall my_present(IDXGISwapChain* _this, UINT a, UINT b)
         ImGui_ImplWin32_NewFrame();
         ImGui::NewFrame();
 
-        // ===== 应用主题 =====
         Theme::Palette pal = Theme::Lerp(g_UIState.themeT);
         Theme::ApplyStyle(pal);
 
-        // ===== 绘制菜单（缩放动画）=====
         if (g_UIState.menuScale > 0.005f) {
             if (!g_UIBound) {
                 g_UIState.menu = &g_MenuData;
@@ -259,7 +260,6 @@ long __stdcall my_present(IDXGISwapChain* _this, UINT a, UINT b)
             }
             UI::Draw(g_UIState, pal, ImGui::GetIO().DeltaTime, nullptr);
         }
-
         if (initFrameCount < 5) {
             initFrameCount++;
         }
@@ -344,7 +344,6 @@ DWORD WINAPI create(LPVOID)
     for (int attempt = 0; attempt < 120; ++attempt) {
         memory::Initialize();
         if (Cheat::Init(memory::clientBase)) {
-            Cheat::InitSilentAimHook();
             Cheat::InitThirdPersonHook();
             break;
         }

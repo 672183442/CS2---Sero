@@ -1,7 +1,10 @@
-﻿#include "ui.h"
+﻿#define NOMINMAX
+#include <algorithm>
+#include "ui.h"
 #include "..\imgui_d11\imgui_internal.h"
 #include "menu.h"
 #include "utils/lang.hpp"
+#include "features/cheat.hpp"
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -9,11 +12,8 @@
 #include <vector>
 #include <algorithm>
 
-
-
 namespace UI {
 
-    // ---- 工具 ----
     static void PanelWithShadow(ImDrawList* dl, ImVec2 min, ImVec2 max,
         ImU32 fill, ImU32 border, ImU32 shadow, float rounding = 16.0f) {
         for (int i = 6; i >= 1; i--) {
@@ -36,7 +36,6 @@ namespace UI {
             dl->AddRectFilled(ImVec2(min.x - o, min.y - o + 3), ImVec2(max.x + o, max.y + o + 5),
                 ImGui::ColorConvertFloat4ToU32(s), rounding + o);
         }
-        
         dl->AddRectFilled(min, max, p.navBar, rounding);
         ImVec4 cardC = ImGui::ColorConvertU32ToFloat4(p.card);
         float lum = cardC.x * 0.299f + cardC.y * 0.587f + cardC.z * 0.114f;
@@ -290,19 +289,6 @@ namespace UI {
         ToggleSwitch(label, v, p);
     }
 
-    static void MultilineReadonly(const std::string& text, const char* emptyMsg, float height = 140.0f) {
-        if (text.empty()) {
-            ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "%s", emptyMsg);
-            return;
-        }
-        ImGui::InputTextMultiline("##MLR",
-            const_cast<char*>(text.c_str()),
-            text.size() + 1,
-            ImVec2(-1, height),
-            ImGuiInputTextFlags_ReadOnly);
-    }
-
-    // ================= Page: Home =================
     // ================= Page: Home =================
     static void PageHome(AppState& st, const Theme::Palette& p) {
         (void)st;
@@ -340,6 +326,7 @@ namespace UI {
             ImVec2(-1, 200.0f),
             ImGuiInputTextFlags_ReadOnly);
     }
+
     // ================= Page: ESP =================
     static void PageESP(AppState& st, const Theme::Palette& p) {
         MenuData& m = *st.menu;
@@ -361,7 +348,13 @@ namespace UI {
         RowToggle(TR("Ray ESP", "射线透视"), &m.bRayESP, p);
         RowToggle(TR("Weapon ESP", "武器透视"), &m.bWeaponESP, p);
         RowToggle(TR("Distance ESP", "距离透视"), &m.bDistanceESP, p);
-
+        RowToggle(TR("Radar Ring", "雷达环"), &m.bRadarRing, p);
+        if (m.bRadarRing) {
+            ImGui::Indent(24.0f);
+            ImGui::Text("%s", TR("Radar Radius", "雷达半径"));
+            FancySlider("radarRad", &m.fRadarRadius, 60.0f, 300.0f, "%.0f", p);
+            ImGui::Unindent(24.0f);
+        }
         ImGui::Dummy(ImVec2(0, 8));
         SectionLabel(TR("OBJECTIVE", "目标物"), p);
         RowToggle(TR("C4 ESP", "C4 透视"), &m.bC4ESP, p);
@@ -386,7 +379,12 @@ namespace UI {
         MenuData& m = *st.menu;
         SectionLabel(TR("AIM ASSIST", "自瞄"), p);
         RowToggle(TR("Auto Aim", "自动瞄准"), &m.bAutoAim, p);
-        RowToggle(TR("Silence Aim", "静默瞄准"), &m.bSilentAim, p);
+        RowToggle(TR("Aim Optimize", "自瞄优化"), &m.bSilentAim, p);
+        ImGui::Indent(24.0f);
+        ImGui::TextColored(Theme::U32ToVec4(p.textDim), "%s",
+            TR("Auto-compensates recoil at close range.",
+                "在近距离射击时会自动压枪"));
+        ImGui::Unindent(24.0f);
 
         ImGui::Dummy(ImVec2(0, 8));
         SectionLabel(TR("SMOOTHING", "平滑度"), p);
@@ -406,6 +404,17 @@ namespace UI {
         };
         RowDropdown(TR("Aim Key", "自瞄按键"), &m.aimKey, aimKeys, IM_ARRAYSIZE(aimKeys), p);
 
+        ImGui::Dummy(ImVec2(0, 8));
+        SectionLabel(TR("AIM POSITION", "自瞄位置"), p);
+        static const char* aimHitboxes[] = {
+            "Head", "Neck", "Chest", "Stomach"
+        };
+        static const char* aimHitboxesCN[] = {
+            "头部", "脖子", "胸部", "肚子"
+        };
+        (void)aimHitboxesCN;
+        RowDropdown(TR("Aim Position", "自瞄位置"),
+            &m.aimHitbox, aimHitboxes, IM_ARRAYSIZE(aimHitboxes), p);
         ImGui::Dummy(ImVec2(0, 8));
         SectionLabel(TR("FILTERS", "过滤"), p);
         RowCheck(TR("Visible aiming", "仅瞄准可见目标"), &m.bVisibleAim, p);
@@ -439,6 +448,29 @@ namespace UI {
         }
 
         ImGui::Dummy(ImVec2(0, 8));
+        SectionLabel(TR("MOVEMENT", "移动"), p);
+        RowToggle(TR("Bunny Hop", "兔子跳"), &m.bBunnyHop, p);
+
+        ImGui::Dummy(ImVec2(0, 8));
+        SectionLabel(TR("PLAYER GLOW", "玩家热能"), p);
+        RowToggle(TR("Glow ESP", "玩家热能"), &m.bGlowESP, p);
+        if (m.bGlowESP) {
+            ImGui::Indent(24.0f);
+            RowCheck(TR("Separate Visible/Invisible", "区分可见"), &m.bGlowSeparateColors, p);
+            if (m.bGlowSeparateColors) {
+                ImGui::ColorEdit4(TR("Visible Color", "可视颜色"),
+                    &m.GlowColorVisible.x, ImGuiColorEditFlags_NoInputs);
+                ImGui::ColorEdit4(TR("Invisible Color", "不可视颜色"),
+                    &m.GlowColorInvisible.x, ImGuiColorEditFlags_NoInputs);
+            }
+            else {
+                ImGui::ColorEdit4(TR("Glow Color", "发光颜色"),
+                    &m.GlowColor.x, ImGuiColorEditFlags_NoInputs);
+            }
+            ImGui::Unindent(24.0f);
+        }
+
+        ImGui::Dummy(ImVec2(0, 8));
         SectionLabel(TR("THIRD PERSON", "第三人称"), p);
         RowToggle(TR("Third Person", "第三人称"), &m.bThirdPerson, p);
         if (m.bThirdPerson) {
@@ -460,24 +492,7 @@ namespace UI {
             RowCheck(TR("Disable Transition", "禁用过渡动画"), &m.bThirdPersonNoInterp, p);
         }
 
-        ImGui::Dummy(ImVec2(0, 8));
-        SectionLabel(TR("PLAYER GLOW", "玩家热能"), p);
-        RowToggle(TR("Glow ESP", "玩家热能"), &m.bGlowESP, p);
-        if (m.bGlowESP) {
-            ImGui::Indent(24.0f);
-            RowCheck(TR("Separate Visible/Invisible", "区分可见"), &m.bGlowSeparateColors, p);
-            if (m.bGlowSeparateColors) {
-                ImGui::ColorEdit4(TR("Visible Color", "可视颜色"),
-                    &m.GlowColorVisible.x, ImGuiColorEditFlags_NoInputs);
-                ImGui::ColorEdit4(TR("Invisible Color", "不可视颜色"),
-                    &m.GlowColorInvisible.x, ImGuiColorEditFlags_NoInputs);
-            }
-            else {
-                ImGui::ColorEdit4(TR("Glow Color", "发光颜色"),
-                    &m.GlowColor.x, ImGuiColorEditFlags_NoInputs);
-            }
-            ImGui::Unindent(24.0f);
-        }
+       
     }
 
     // ================= Page: Performance =================
@@ -612,10 +627,34 @@ namespace UI {
         ImGui::Text("%s", TR("Frame Padding Y", "框架垂直内边距"));
         FancySlider("fpY", &m.FramePaddingY, 3.0f, 10.0f, "%.0f", p);
 
+        // ==================== 调试信息 ====================
         ImGui::Dummy(ImVec2(0, 8));
-        SectionLabel(TR("DEBUG", "调试选项"), p);
-        RowToggle(TR("Grenade Debug Info", "投掷物调试信息"),
-            &m.bGrenadeDebug, p);
+        SectionLabel(TR("DEBUG", "调试信息"), p);
+
+        RowToggle(TR("Debug Info", "调试信息"), &m.bGrenadeDebug, p);
+
+        if (m.bGrenadeDebug) {
+            ImGui::Dummy(ImVec2(0, 4));
+
+            std::vector<std::string> snapshot;
+            {
+                std::lock_guard<std::mutex> lock(Cheat::debugMutex);
+                snapshot = Cheat::debugEntityList;
+            }
+
+            ImGui::TextColored(Theme::U32ToVec4(p.textDim),
+                TR("Entity Count: %zu", "实体数量：%zu"),
+                snapshot.size());
+
+            ImGui::BeginChild("##dbgList", ImVec2(-1, 260.0f), true,
+                ImGuiWindowFlags_HorizontalScrollbar);
+
+            for (const auto& line : snapshot) {
+                ImGui::TextUnformatted(line.c_str());
+            }
+
+            ImGui::EndChild();
+        }
     }
 
     // ================= Page: About =================
@@ -888,8 +927,6 @@ namespace UI {
         st.burst.Update(dt);
 
         if (!st.menu) return;
-
-        // ★ 完全缩到中心（隐藏）→ 直接不画
         if (st.menuScale < 0.005f) return;
 
         ImGuiViewport* vp = ImGui::GetMainViewport();
@@ -904,12 +941,24 @@ namespace UI {
         ImDrawList* dl = ImGui::GetWindowDrawList();
         ImVec2 wp = vp->WorkPos, ws = vp->WorkSize;
 
+        // ============ 全屏灰糊蒙版（随菜单展开淡入）============
+        {
+            float s = st.menuScale;
+            if (s < 0.0f) s = 0.0f;
+            if (s > 1.0f) s = 1.0f;
+            // 蒙版不透明度：最大 0.55，随 menuScale 平滑淡入
+            float alpha = 0.55f * s;
+            if (alpha > 0.001f) {
+                ImU32 veilColor = IM_COL32(0, 0, 0, (int)(alpha * 255.0f + 0.5f));
+                dl->AddRectFilled(wp, ImVec2(wp.x + ws.x, wp.y + ws.y), veilColor);
+            }
+        }
+
         float cardW = ImMin(ws.x - 80.0f, 960.0f);
         float cardH = ImMin(ws.y - 80.0f, 660.0f);
         ImVec2 cmin(wp.x + (ws.x - cardW) * 0.5f, wp.y + (ws.y - cardH) * 0.5f);
         ImVec2 cmax(cmin.x + cardW, cmin.y + cardH);
 
-        // ★★★ 根据 menuScale 计算裁切区域（从中心向外扩张 / 向中心收缩）
         float s = st.menuScale;
         if (s < 0.0f) s = 0.0f;
         if (s > 1.0f) s = 1.0f;
@@ -921,10 +970,8 @@ namespace UI {
         ImVec2 clipMin(center.x - halfW, center.y - halfH);
         ImVec2 clipMax(center.x + halfW, center.y + halfH);
 
-        // 用 ImGui::PushClipRect 影响本窗口后续**所有**绘制（含子控件）
         ImGui::PushClipRect(clipMin, clipMax, true);
 
-        // ===== 以下所有绘制完全保持不变 =====
         PanelWithShadow(dl, cmin, cmax, p.card, p.cardBorder, p.shadow, 22.0f);
         if (st.showDots) Fx::DrawDotGrid(dl, cmin, cmax, p.dotGrid, 16.0f);
         if (st.showBeams) st.beams.Draw(dl, cmin, cmax, p.accent);
@@ -949,9 +996,8 @@ namespace UI {
 
         BottomNav(st, p, cmin, cmax);
         st.burst.Draw(dl);
-        // ===== 绘制结束 =====
 
-        ImGui::PopClipRect();   // ★ 取消裁切
+        ImGui::PopClipRect();
 
         ImGui::End();
         ImGui::PopStyleVar();

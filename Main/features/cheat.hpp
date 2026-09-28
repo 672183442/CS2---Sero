@@ -23,7 +23,7 @@ struct EnemyInfo {
     bool isSpotted = true;
     bool hasC4 = false;
     bool isFriend = false;
-    std::vector<std::string> carriedGrenades;   // ★ 新增：该玩家携带的投掷物显示名列表
+    std::vector<std::string> carriedGrenades;
 };
 
 struct LocalPlayerCache {
@@ -78,23 +78,27 @@ namespace Cheat
     extern std::vector<GrenadeInfo> grenades;
     extern std::vector<DroppedWeaponInfo> droppedWeapons;
 
+    // ===== 调试信息 =====
+    extern std::mutex debugMutex;
+    extern std::vector<std::string> debugEntityList;
+
     bool Init(uintptr_t clientBase);
     void UpdateEntities();
     void UpdateGrenades();
     void UpdateGroundItems();
+    void UpdateDebugEntityList();
     void RunAimbot();
     void DrawESP(ImDrawList* drawList);
-
     bool InitSilentAimHook();
     void CleanupSilentAimHook();
     void UpdateSilentAimCache();
     void RunThirdPerson();
     bool InitThirdPersonHook();
     void CleanupThirdPersonHook();
-
     bool WorldToScreen(const vec3& world, vec2& screen, const float m[16]);
     double PlayerDistance(const vec3& a, const vec3& b);
     float NormalizeAngle(float angle);
     vec2 CalcAngle(const vec3& src, const vec3& dst);
     float GetFOV(const vec2& viewAngle, const vec2& aimAngle);
+    void RunBunnyHop();
 }
