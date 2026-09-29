@@ -295,10 +295,8 @@ namespace UI {
         SectionLabel(TR("VERSION INFO", "版本信息"), p);
 
         static const std::string versionText =
-            "20260928\u53f7\u66f4\u65b0\n"
-            "1.\u4fee\u590d20260927\u53f7\u66f4\u65b0\u7684\u6295\u63b7\u7269\u82e5\u73a9\u5bb6\u643a\u5e26\u591a\u4e2a\u91cd\u53e0\u95ee\u9898\n"
-            "2.\u66f4\u6539UI\n"
-            "3.\u53bb\u9664\u7f51\u7edc\u9a8c\u8bc1\u6539\u4e3a\u79bb\u7ebf";
+            "20260929 2\u53f7\u66f4\u65b0\n"
+            "1.\u66f4\u65b0\u9759\u9ed8\u81ea\u7784";
 
         ImGui::InputTextMultiline("##VersionDisplay",
             const_cast<char*>(versionText.c_str()),
@@ -375,10 +373,45 @@ namespace UI {
     }
 
     // ================= Page: Aim =================
+       // ================= Page: Aim =================
+      // ================= Page: Aim =================
     static void PageAim(AppState& st, const Theme::Palette& p) {
         MenuData& m = *st.menu;
         SectionLabel(TR("AIM ASSIST", "自瞄"), p);
+
+        // ---------- 自动瞄准（与静默自瞄互斥）----------
+        bool prevAutoAim = m.bAutoAim;
         RowToggle(TR("Auto Aim", "自动瞄准"), &m.bAutoAim, p);
+        if (m.bAutoAim != prevAutoAim && m.bAutoAim) {
+            m.bSilentAimAngle = false;   // 打开自动瞄准 → 关闭静默自瞄
+        }
+
+        // ---------- 静默自瞄（改弹道，与自动瞄准互斥）----------
+        bool prevSilentAngle = m.bSilentAimAngle;
+        RowToggle(TR("Silent Aim", "静默自瞄"), &m.bSilentAimAngle, p);
+        if (m.bSilentAimAngle != prevSilentAngle && m.bSilentAimAngle) {
+            m.bAutoAim = false;          // 打开静默自瞄 → 关闭自动瞄准
+        }
+        {
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.15f, 0.15f, 1.0f));
+            ImGui::TextWrapped("%s", TR(
+                "WARNING: This feature modifies bullet trajectory and may cause VAC ban!",
+                "警告：该功能会修改子弹弹道，可能会导致 VAC 封禁！"));
+            ImGui::PopStyleColor();
+            ImGui::Dummy(ImVec2(0, 4));
+        }
+
+        // ---------- 后坐力补偿（仅静默自瞄开启时显示）----------
+        if (m.bSilentAimAngle) {
+            ImGui::Indent(24.0f);
+            ImGui::Text("%s", TR("Recoil Compensation", "后坐力补偿"));
+            FancySlider("silentRcs", &m.fSilentAimRcsScale, 0.0f, 2.0f, "%.2f", p);
+            ImGui::TextColored(Theme::U32ToVec4(p.textDim), "%s",
+                TR("1.0 = full compensation. Lower if bullets overshoot.",
+                    "1.0 = 完全补偿。如果子弹打过头，调低此值。"));
+            ImGui::Unindent(24.0f);
+        }
+
         RowToggle(TR("Aim Optimize", "自瞄优化"), &m.bSilentAim, p);
         ImGui::Indent(24.0f);
         ImGui::TextColored(Theme::U32ToVec4(p.textDim), "%s",
@@ -425,9 +458,11 @@ namespace UI {
         RowToggle(TR("Aim Scope", "显示自瞄范围"), &m.bAimScope, p);
         if (m.bAimScope) {
             ImGui::Text("%s", TR("Aim FOV", "自瞄视野"));
-            FancySlider("aimFov", &m.fAimFOV, 1.0f, 60.0f, "%.1f deg", p);
+            // ★ FOV 上限从 60 扩大到 180
+            FancySlider("aimFov", &m.fAimFOV, 1.0f, 180.0f, "%.1f deg", p);
         }
-        if (m.bAutoAim) {
+        // ★ 自动瞄准或静默自瞄任意一个开启时，都显示"锁定线"选项
+        if (m.bAutoAim || m.bSilentAimAngle) {
             RowToggle(TR("Currently locked", "显示自瞄锁定线"), &m.bShowAimLock, p);
         }
     }

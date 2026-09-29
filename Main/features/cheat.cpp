@@ -46,6 +46,12 @@ namespace Cheat
     static int frameCounter = 0;
     static int lastUpdateFrame = 0;
 
+    // ★ 静默自瞄（改弹道角度）相关
+    static uint8_t* g_silentAngleBlock = nullptr;
+    static uintptr_t g_silentAnglePitchAddr = 0;
+    static uintptr_t g_silentAngleYawAddr = 0;
+    static bool      g_silentAngleHooked = false;
+
     struct WeaponNameCache {
         std::unordered_map<uint16_t, std::string> cache;
         std::mutex mutex;
@@ -201,9 +207,6 @@ namespace Cheat
         return "";
     }
 
-    // ============================================================
-    // 调试信息：实时列出所有实体
-    // ============================================================
     void UpdateDebugEntityList() {
         std::vector<std::string> out;
         out.reserve(256);
@@ -967,12 +970,33 @@ namespace Cheat
         }
     }
 
+    // ============================================================
+    // 静默自瞄弹道：前置声明
+    // ============================================================
+    static void* AllocNearAddress(uintptr_t target, size_t size);
+    static void  EmitSilentTrampoline(uint8_t* code, uint8_t* blockBase,
+        size_t valueOffset, bool isYaw,
+        uintptr_t retAddr);
+
+    // ============================================================
+    // RunAimbot：包含自动瞄准 / 静默自瞄(改弹道) / 后坐力补偿
+    // ============================================================
     void RunAimbot() {
         hasAimTarget = false;
-        if (!g_MenuData.bAutoAim) return;
+
+        // ★ 每帧默认关闭静默弹道（避免上一帧的激活残留）
+        if (g_silentAngleBlock) {
+            InterlockedExchange(reinterpret_cast<volatile LONG*>(g_silentAngleBlock + 0), 0);
+        }
+
+        // ★ 静默自瞄也可以独立于"自动瞄准"触发目标搜索
+        bool needSearch = g_MenuData.bAutoAim || g_MenuData.bSilentAimAngle;
+        if (!needSearch) return;
+
         int selectedKey = aimKeyMap[g_MenuData.aimKey];
         if (!(GetAsyncKeyState(selectedKey) & 0x8000)) return;
         if (!localPlayer.isValid) return;
+
         const vec3& eyePos = localPlayer.eyePosition;
         float currentPitch = memory::Read<float>(memory::clientBase + cs2_dumper::offsets::client_dll::dwViewAngles);
         float currentYaw = memory::Read<float>(memory::clientBase + cs2_dumper::offsets::client_dll::dwViewAngles + 0x4);
@@ -981,7 +1005,6 @@ namespace Cheat
         vec2 bestAngle = { 0.0f, 0.0f };
         bool found = false;
         vec3 targetPos = { 0,0,0 };
-        float targetDist = 0.0f;   // ← 加这一行
         uintptr_t entityList = memory::Read<uintptr_t>(memory::clientBase + cs2_dumper::offsets::client_dll::dwEntityList);
         if (!entityList) return;
         uint8_t myTeam = memory::Read<uint8_t>(localPlayer.pawn + cs2_dumper::schemas::client_dll::C_BaseEntity::m_iTeamNum);
@@ -1015,13 +1038,12 @@ namespace Cheat
             vec3 headPos = feetPos + viewOffset;
             headPos.z -= duckAmount * viewOffset.z * 0.6f;
 
-            // ---- 根据菜单选择计算瞄准点 ----
-            float ratio = 1.0f;   // 相对于 viewOffset 的比例，1.0 = 头
+            float ratio = 1.0f;
             switch (g_MenuData.aimHitbox) {
-            case 0: ratio = 1.00f; break; // 头
-            case 1: ratio = 0.90f; break; // 脖子
-            case 2: ratio = 0.75f; break; // 胸
-            case 3: ratio = 0.55f; break; // 肚子
+            case 0: ratio = 1.00f; break;
+            case 1: ratio = 0.90f; break;
+            case 2: ratio = 0.75f; break;
+            case 3: ratio = 0.55f; break;
             default: ratio = 1.00f; break;
             }
 
@@ -1040,18 +1062,50 @@ namespace Cheat
                 bestFOV = fov;
                 bestAngle = aim;
                 targetPos = aimPoint;
-                targetDist = static_cast<float>(PlayerDistance(eyePos, aimPoint));
                 found = true;
             }
         }
 
-        if (found) { hasAimTarget = true; aimTargetPosition = targetPos; }
+        if (found) {
+            hasAimTarget = true;
+            aimTargetPosition = targetPos;
+
+            // ===== ★ 写入静默弹道角度（含后坐力补偿）=====
+            if (g_silentAngleBlock && g_MenuData.bSilentAimAngle) {
+                float pitch = bestAngle.x;
+                float yaw = bestAngle.y;
+
+                uintptr_t aimPunchServices = memory::Read<uintptr_t>(
+                    localPlayer.pawn + cs2_dumper::schemas::client_dll::C_CSPlayerPawn::m_pAimPunchServices);
+                if (aimPunchServices && memory::IsReadable(aimPunchServices, sizeof(vec3))) {
+                    vec3 aimPunch = memory::Read<vec3>(
+                        aimPunchServices + cs2_dumper::schemas::client_dll::CCSPlayer_AimPunchServices::m_predictableBaseAngle);
+
+                    float rcsScale = g_MenuData.fSilentAimRcsScale;
+                    if (rcsScale < 0.0f) rcsScale = 0.0f;
+                    if (rcsScale > 2.0f) rcsScale = 2.0f;
+
+                    pitch -= aimPunch.x * 2.0f * rcsScale;
+                    yaw -= aimPunch.y * 2.0f * rcsScale;
+                }
+
+                if (pitch > 89.0f) pitch = 89.0f;
+                if (pitch < -89.0f) pitch = -89.0f;
+                while (yaw > 180.0f) yaw -= 360.0f;
+                while (yaw < -180.0f) yaw += 360.0f;
+
+                *reinterpret_cast<float*>(g_silentAngleBlock + 0x04) = pitch;
+                *reinterpret_cast<float*>(g_silentAngleBlock + 0x08) = yaw;
+                InterlockedExchange(reinterpret_cast<volatile LONG*>(g_silentAngleBlock + 0), 1);
+            }
+        }
         if (!found) return;
+
+        // 只有开了自动瞄准，才需要动视角/鼠标
+        if (!g_MenuData.bAutoAim) return;
 
         if (g_MenuData.bSilentAim) {
             vec3 compensatedAngle = { bestAngle.x, bestAngle.y, 0.0f };
-
-            // 后坐力补偿
             uintptr_t aimPunchServices = memory::Read<uintptr_t>(
                 localPlayer.pawn + cs2_dumper::schemas::client_dll::C_CSPlayerPawn::m_pAimPunchServices);
             if (aimPunchServices && memory::IsReadable(aimPunchServices, sizeof(vec3))) {
@@ -1060,18 +1114,12 @@ namespace Cheat
                 compensatedAngle.x -= aimPunch.x * 2.0f;
                 compensatedAngle.y -= aimPunch.y * 2.0f;
             }
-
             if (compensatedAngle.x > 89.0f) compensatedAngle.x = 89.0f;
             if (compensatedAngle.x < -89.0f) compensatedAngle.x = -89.0f;
             compensatedAngle.y = NormalizeAngle(compensatedAngle.y);
 
-            // 直接写视角角度 = 瞬锁（服务器视作本地瞄准）
-            memory::Write<float>(
-                memory::clientBase + cs2_dumper::offsets::client_dll::dwViewAngles,
-                compensatedAngle.x);
-            memory::Write<float>(
-                memory::clientBase + cs2_dumper::offsets::client_dll::dwViewAngles + 0x4,
-                compensatedAngle.y);
+            memory::Write<float>(memory::clientBase + cs2_dumper::offsets::client_dll::dwViewAngles, compensatedAngle.x);
+            memory::Write<float>(memory::clientBase + cs2_dumper::offsets::client_dll::dwViewAngles + 4, compensatedAngle.y);
         }
         else {
             vec2 compensatedTarget = bestAngle;
@@ -1118,6 +1166,171 @@ namespace Cheat
     }
 
     // ============================================================
+    // ★ 静默自瞄（Hook 子弹弹道角度）
+    //   特征码：83 49 ? ? 8B 41 10 F3 ? ? 41 18 83 C8 02
+    //           F3 ? ? 4F 14 89 41 ? 83 C8 ? F3 ? ? 49 1C
+    //           F3 ? ? 47 18
+    //   pitch 相对特征码 +0x07，yaw 相对 +0x1A
+    // ============================================================
+    static constexpr size_t kSilentAngleBlockSize = 0x100;
+
+    static const uint8_t kOrigPitchBytes[5] = { 0xF3, 0x0F, 0x11, 0x41, 0x18 };
+    static const uint8_t kOrigYawBytes[5] = { 0xF3, 0x0F, 0x11, 0x49, 0x1C };
+
+    static void* AllocNearAddress(uintptr_t target, size_t size)
+    {
+        SYSTEM_INFO si;
+        GetSystemInfo(&si);
+        uintptr_t gran = si.dwAllocationGranularity;
+        uintptr_t start = target & ~(gran - 1);
+
+        for (uintptr_t a = start; a < start + 0x70000000ULL; a += gran) {
+            void* p = VirtualAlloc((void*)a, size, MEM_COMMIT | MEM_RESERVE,
+                PAGE_EXECUTE_READWRITE);
+            if (p) return p;
+        }
+        for (uintptr_t a = start; a > start - 0x70000000ULL; a -= gran) {
+            void* p = VirtualAlloc((void*)a, size, MEM_COMMIT | MEM_RESERVE,
+                PAGE_EXECUTE_READWRITE);
+            if (p) return p;
+        }
+        return nullptr;
+    }
+
+    static void EmitSilentTrampoline(uint8_t* code, uint8_t* blockBase,
+        size_t valueOffset, bool isYaw,
+        uintptr_t retAddr)
+    {
+        uint8_t* p = code;
+
+        *p++ = 0x50;                       // push rax
+
+        *p++ = 0x8B; *p++ = 0x05;          // mov eax, [rip+rel32]  (active)
+        {
+            int32_t rel = (int32_t)((intptr_t)(blockBase + 0) - (intptr_t)(p + 4));
+            memcpy(p, &rel, 4); p += 4;
+        }
+
+        *p++ = 0x85; *p++ = 0xC0;          // test eax, eax
+        *p++ = 0x74; *p++ = 0x08;          // jz +8
+
+        *p++ = 0xF3; *p++ = 0x0F; *p++ = 0x10;
+        *p++ = isYaw ? 0x0D : 0x05;
+        {
+            int32_t rel = (int32_t)((intptr_t)(blockBase + valueOffset) - (intptr_t)(p + 4));
+            memcpy(p, &rel, 4); p += 4;
+        }
+
+        *p++ = 0x58;                       // pop rax
+
+        *p++ = 0xF3; *p++ = 0x0F; *p++ = 0x11;
+        if (isYaw) { *p++ = 0x49; *p++ = 0x1C; }
+        else { *p++ = 0x41; *p++ = 0x18; }
+
+        *p++ = 0xE9;
+        {
+            int32_t rel = (int32_t)((intptr_t)retAddr - (intptr_t)(p + 4));
+            memcpy(p, &rel, 4); p += 4;
+        }
+    }
+
+    bool InitSilentAimAngleHook()
+    {
+        if (g_silentAngleHooked) return true;
+
+        uintptr_t client = memory::clientBase;
+        if (!client) {
+            AddHUDNotification("SilentAimAngle", "client base null", IM_COL32(255, 80, 80, 255));
+            return false;
+        }
+
+        static const char* kPattern =
+            "83 49 ? ? 8B 41 10 F3 ? ? 41 18 83 C8 02 "
+            "F3 ? ? 4F 14 89 41 ? 83 C8 ? F3 ? ? 49 1C "
+            "F3 ? ? 47 18";
+
+        void* base = Scanner::PatternScan("client.dll", kPattern);
+        if (!base) {
+            AddHUDNotification("SilentAimAngle", "pattern NOT FOUND", IM_COL32(255, 80, 80, 255));
+            return false;
+        }
+
+        uintptr_t patternAddr = (uintptr_t)base;
+        uintptr_t pitchAddr = patternAddr + 0x07;
+        uintptr_t yawAddr = patternAddr + 0x1A;
+
+        if (memcmp((void*)pitchAddr, kOrigPitchBytes, 5) != 0) {
+            AddHUDNotification("SilentAimAngle", "pitch byte mismatch", IM_COL32(255, 80, 80, 255));
+            return false;
+        }
+        if (memcmp((void*)yawAddr, kOrigYawBytes, 5) != 0) {
+            AddHUDNotification("SilentAimAngle", "yaw byte mismatch", IM_COL32(255, 80, 80, 255));
+            return false;
+        }
+
+        uint8_t* block = (uint8_t*)AllocNearAddress(patternAddr, kSilentAngleBlockSize);
+        if (!block) {
+            AddHUDNotification("SilentAimAngle", "alloc near failed", IM_COL32(255, 80, 80, 255));
+            return false;
+        }
+        memset(block, 0, kSilentAngleBlockSize);
+
+        g_silentAngleBlock = block;
+        g_silentAnglePitchAddr = pitchAddr;
+        g_silentAngleYawAddr = yawAddr;
+
+        EmitSilentTrampoline(block + 0x10, block, 0x04, false, pitchAddr + 5);
+        EmitSilentTrampoline(block + 0x50, block, 0x08, true, yawAddr + 5);
+
+        uint8_t patch[5];
+        patch[0] = 0xE9;
+        DWORD old;
+
+        VirtualProtect((void*)pitchAddr, 5, PAGE_EXECUTE_READWRITE, &old);
+        {
+            int32_t rel = (int32_t)((intptr_t)(block + 0x10) - (intptr_t)(pitchAddr + 5));
+            memcpy(patch + 1, &rel, 4);
+            memcpy((void*)pitchAddr, patch, 5);
+        }
+        VirtualProtect((void*)pitchAddr, 5, old, &old);
+
+        VirtualProtect((void*)yawAddr, 5, PAGE_EXECUTE_READWRITE, &old);
+        {
+            int32_t rel = (int32_t)((intptr_t)(block + 0x50) - (intptr_t)(yawAddr + 5));
+            memcpy(patch + 1, &rel, 4);
+            memcpy((void*)yawAddr, patch, 5);
+        }
+        VirtualProtect((void*)yawAddr, 5, old, &old);
+
+        g_silentAngleHooked = true;
+        AddHUDNotification("SilentAimAngle", "hook OK", IM_COL32(80, 255, 80, 255));
+        return true;
+    }
+
+    void CleanupSilentAimAngleHook()
+    {
+        if (g_silentAnglePitchAddr) {
+            DWORD old;
+            VirtualProtect((void*)g_silentAnglePitchAddr, 5, PAGE_EXECUTE_READWRITE, &old);
+            memcpy((void*)g_silentAnglePitchAddr, kOrigPitchBytes, 5);
+            VirtualProtect((void*)g_silentAnglePitchAddr, 5, old, &old);
+            g_silentAnglePitchAddr = 0;
+        }
+        if (g_silentAngleYawAddr) {
+            DWORD old;
+            VirtualProtect((void*)g_silentAngleYawAddr, 5, PAGE_EXECUTE_READWRITE, &old);
+            memcpy((void*)g_silentAngleYawAddr, kOrigYawBytes, 5);
+            VirtualProtect((void*)g_silentAngleYawAddr, 5, old, &old);
+            g_silentAngleYawAddr = 0;
+        }
+        if (g_silentAngleBlock) {
+            VirtualFree(g_silentAngleBlock, 0, MEM_RELEASE);
+            g_silentAngleBlock = nullptr;
+        }
+        g_silentAngleHooked = false;
+    }
+
+    // ============================================================
     // Bunny Hop
     // ============================================================
     void RunBunnyHop() {
@@ -1134,8 +1347,8 @@ namespace Cheat
             localPawn + cs2_dumper::schemas::client_dll::C_BaseEntity::m_iHealth);
         if (health <= 0) return;
 
-        constexpr uintptr_t kButtonJump = 0x22305D0;          // buttons::jump
-        constexpr uintptr_t k_m_fFlags = 0x3F4;               // C_BaseEntity::m_fFlags
+        constexpr uintptr_t kButtonJump = 0x22305D0;
+        constexpr uintptr_t k_m_fFlags = 0x3F4;
 
         uintptr_t jumpBtnAddr = client + kButtonJump;
 
@@ -1154,12 +1367,8 @@ namespace Cheat
         resetPending = true;
     }
 
-  
- 
-
     void DrawESP(ImDrawList* drawList) {
         if (!drawList) return;
-
         if (!g_MenuData.bMainESP) return;
 
         static float halfW = WINDOW_W / 2.0f;
@@ -1223,50 +1432,41 @@ namespace Cheat
         ImU32 rayColorInvisible = IM_COL32((int)(g_MenuData.RayColorInvisible.x * 255), (int)(g_MenuData.RayColorInvisible.y * 255), (int)(g_MenuData.RayColorInvisible.z * 255), (int)(g_MenuData.RayColorInvisible.w * 255));
         ImU32 textColor = IM_COL32(255, 255, 255, 255);
         ImU32 c4Color = IM_COL32(255, 165, 0, 255);
-        // ============================================================
-// Radar Ring (准星雷达环)
-// ============================================================
+
         if (g_MenuData.bRadarRing) {
             const float cx = WINDOW_W / 2.0f;
             const float cy = WINDOW_H / 2.0f;
             const float radius = std::clamp(g_MenuData.fRadarRadius, 40.0f, 400.0f);
-            // 开启抗锯齿，让箭头/圆点边缘平滑
             drawList->Flags |= ImDrawListFlags_AntiAliasedFill | ImDrawListFlags_AntiAliasedLines;
-            drawList->AddCircle(ImVec2(cx, cy), radius,
-                IM_COL32(255, 255, 255, 70), 64, 1.2f);
+            drawList->AddCircle(ImVec2(cx, cy), radius, IM_COL32(255, 255, 255, 70), 64, 1.2f);
 
             const float playerYaw = snapLocalViewAngle.y;
 
             struct DirMark { const char* label; float worldYaw; ImU32 color; };
             static const DirMark kDirs[] = {
-                { "N",  90.0f, IM_COL32(255, 200,  80, 240) }, // 北 (+Y)
-                { "E",   0.0f, IM_COL32(140, 220, 255, 240) }, // 东 (+X)
-                { "S", -90.0f, IM_COL32(255, 140, 140, 240) }, // 南 (-Y)
-                { "W", 180.0f, IM_COL32(180, 255, 180, 240) }, // 西 (-X)
+                { "N",  90.0f, IM_COL32(255, 200,  80, 240) },
+                { "E",   0.0f, IM_COL32(140, 220, 255, 240) },
+                { "S", -90.0f, IM_COL32(255, 140, 140, 240) },
+                { "W", 180.0f, IM_COL32(180, 255, 180, 240) },
             };
 
             ImFont* dirFont = ImGui::GetFont();
             const float dirFontSize = ImGui::GetFontSize() * 1.15f;
-            const float dirTextOffset = 14.0f; // 字母离圆环的距离
+            const float dirTextOffset = 14.0f;
 
             for (const auto& d : kDirs) {
                 float relative = NormalizeAngle(d.worldYaw - playerYaw);
                 float rad = relative * (3.14159265f / 180.0f);
 
-                // 放在圆环外侧一点
                 float px = cx - (radius + dirTextOffset) * std::sin(rad);
                 float py = cy - (radius + dirTextOffset) * std::cos(rad);
 
                 ImVec2 ts = dirFont->CalcTextSizeA(dirFontSize, FLT_MAX, 0.0f, d.label);
                 ImVec2 tp(px - ts.x * 0.5f, py - ts.y * 0.5f);
 
-                // 黑色阴影打底，保证任何背景都看得清
-                drawList->AddText(dirFont, dirFontSize,
-                    ImVec2(tp.x + 1.0f, tp.y + 1.0f),
-                    IM_COL32(0, 0, 0, 220), d.label);
+                drawList->AddText(dirFont, dirFontSize, ImVec2(tp.x + 1.0f, tp.y + 1.0f), IM_COL32(0, 0, 0, 220), d.label);
                 drawList->AddText(dirFont, dirFontSize, tp, d.color, d.label);
 
-                // 环上刻一个小点，让方向和环的位置对应更清楚
                 float rx = cx - radius * std::sin(rad);
                 float ry = cy - radius * std::cos(rad);
                 drawList->AddCircleFilled(ImVec2(rx, ry), 3.0f, d.color, 12);
@@ -1276,28 +1476,18 @@ namespace Cheat
                 float dy = enemy.position.y - snapLocalPos.y;
                 if (std::abs(dx) < 0.1f && std::abs(dy) < 0.1f) continue;
 
-                // 世界坐标指向敌人的 yaw
                 float enemyYaw = std::atan2(dy, dx) * (180.0f / 3.14159265f);
                 float relative = NormalizeAngle(enemyYaw - playerYaw);
 
-                // 屏幕圆周上的位置
                 float rad = relative * (3.14159265f / 180.0f);
                 float px = cx - radius * std::sin(rad);
                 float py = cy - radius * std::cos(rad);
 
-                // 颜色
                 ImU32 markerColor;
-                if (enemy.isFriend) {
-                    markerColor = IM_COL32(80, 140, 255, 255);
-                }
-                else if (enemy.isSpotted) {
-                    markerColor = IM_COL32(80, 255, 80, 255);
-                }
-                else {
-                    markerColor = IM_COL32(255, 80, 80, 255);
-                }
+                if (enemy.isFriend) markerColor = IM_COL32(80, 140, 255, 255);
+                else if (enemy.isSpotted) markerColor = IM_COL32(80, 255, 80, 255);
+                else markerColor = IM_COL32(255, 80, 80, 255);
 
-                // 指向外侧的小箭头
                 float dirX = (px - cx) / radius;
                 float dirY = (py - cy) / radius;
                 float perpX = -dirY;
@@ -1310,14 +1500,12 @@ namespace Cheat
                 ImVec2 left(px - perpX * arrowBase, py - perpY * arrowBase);
                 ImVec2 right(px + perpX * arrowBase, py + perpY * arrowBase);
 
-                // 用线画 V 形箭头（比填充三角形平滑得多）
                 drawList->AddLine(left, tip, markerColor, 2.0f);
                 drawList->AddLine(right, tip, markerColor, 2.0f);
-
-                // 中心圆点
                 drawList->AddCircleFilled(ImVec2(px, py), 3.5f, markerColor, 16);
             }
         }
+
         bool enableLOD = g_MenuData.performance.enableLOD;
         float lod1 = g_MenuData.performance.lodDistance1;
         float lod2 = g_MenuData.performance.lodDistance2;

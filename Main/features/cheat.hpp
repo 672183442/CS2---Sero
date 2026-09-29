@@ -78,7 +78,6 @@ namespace Cheat
     extern std::vector<GrenadeInfo> grenades;
     extern std::vector<DroppedWeaponInfo> droppedWeapons;
 
-    // ===== 调试信息 =====
     extern std::mutex debugMutex;
     extern std::vector<std::string> debugEntityList;
 
@@ -95,6 +94,11 @@ namespace Cheat
     void RunThirdPerson();
     bool InitThirdPersonHook();
     void CleanupThirdPersonHook();
+
+    // ★ 静默自瞄（Hook 子弹弹道）
+    bool InitSilentAimAngleHook();
+    void CleanupSilentAimAngleHook();
+
     bool WorldToScreen(const vec3& world, vec2& screen, const float m[16]);
     double PlayerDistance(const vec3& a, const vec3& b);
     float NormalizeAngle(float angle);

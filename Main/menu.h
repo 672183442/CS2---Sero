@@ -32,9 +32,9 @@ struct MenuData
     bool bGrenadeThrown = true;
     bool bGrenadeDebug = false;
     bool bRemoveFriends = true;
-    bool  bRadarRing = false;    // 雷达环
-    float fRadarRadius = 120.0f;   // 环半径（像素）
-   
+    bool  bRadarRing = false;
+    float fRadarRadius = 120.0f;
+
     // Aim
     bool bAutoAim = false;
     float fAimSmooth = 1.0f;
@@ -42,11 +42,14 @@ struct MenuData
     bool bAimScope = false;
     float fAimFOV = 30.0f;
     bool bSilentAim = false;
+    bool bSilentAimAngle = false;          // ★ 静默自瞄（Hook 子弹弹道）
+    float fSilentAimRcsScale = 1.0f;       // ★ 静默自瞄后坐力补偿强度 (0~2)
     bool bShowAimLock = false;
     int aimKey = 1;
     bool bVisibleAim = false;
     bool bAimFriends = false;
     int aimHitbox = 0;   // 0=头 1=脖 2=胸 3=肚子
+
     // Other
     bool bAntiFlash = true;
     bool bFOVChanger = false;
@@ -62,6 +65,7 @@ struct MenuData
     ImVec4 GlowColorVisible;
     ImVec4 GlowColorInvisible;
     bool bBunnyHop = false;
+
     // Colors
     ImVec4 AccentColor;
     ImVec4 AimLockColor;
@@ -78,6 +82,7 @@ struct MenuData
     float ItemSpacing = 8.0f;
     float FramePaddingX = 6.0f;
     float FramePaddingY = 5.0f;
+
     // Remote
     std::string versionInfo;
     std::string versionNumber;
@@ -101,6 +106,5 @@ struct MenuData
 
 extern MenuData g_MenuData;
 
-// HUD 通知（右下角弹窗）
 void AddHUDNotification(const char* text, const char* subtext = "", ImU32 color = IM_COL32(100, 200, 100, 255));
 void RenderHUD();

@@ -345,6 +345,7 @@ DWORD WINAPI create(LPVOID)
         memory::Initialize();
         if (Cheat::Init(memory::clientBase)) {
             Cheat::InitThirdPersonHook();
+            Cheat::InitSilentAimAngleHook();   // ★ 新增：静默自瞄弹道 Hook
             break;
         }
         Sleep(500);
@@ -365,6 +366,7 @@ BOOL __stdcall DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReser
     case DLL_PROCESS_DETACH:
         Cheat::CleanupSilentAimHook();
         Cheat::CleanupThirdPersonHook();
+        Cheat::CleanupSilentAimAngleHook();    // ★ 新增
         if (origin_present) {
             MH_DisableHook(MH_ALL_HOOKS);
             MH_RemoveHook(MH_ALL_HOOKS);
