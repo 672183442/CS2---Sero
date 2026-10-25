@@ -429,6 +429,14 @@ namespace UI {
         if (!m.bAutoAim) ImGui::EndDisabled();
 
         ImGui::Dummy(ImVec2(0, 8));
+        SectionLabel(TR("PREDICTION", "预测"), p);
+        ImGui::Text("%s", TR("Movement Prediction", "移动预测"));
+        FancySlider("aimPred", &m.fAimPrediction, 0.0f, 0.5f, "%.2f sec", p);
+        ImGui::TextColored(Theme::U32ToVec4(p.textDim), "%s",
+            TR("Lead moving targets. 0.0 = off, 0.2 = moderate.",
+                "提前量预测移动目标。0.0 = 关闭，0.2 = 适中。"));
+
+        ImGui::Dummy(ImVec2(0, 8));
         SectionLabel(TR("AIM KEY", "自瞄按键"), p);
         static const char* aimKeys[] = {
             "Ctrl", "Shift", "W", "Q", "E", "R",
@@ -442,10 +450,6 @@ namespace UI {
         static const char* aimHitboxes[] = {
             "Head", "Neck", "Chest", "Stomach"
         };
-        static const char* aimHitboxesCN[] = {
-            "头部", "脖子", "胸部", "肚子"
-        };
-        (void)aimHitboxesCN;
         RowDropdown(TR("Aim Position", "自瞄位置"),
             &m.aimHitbox, aimHitboxes, IM_ARRAYSIZE(aimHitboxes), p);
         ImGui::Dummy(ImVec2(0, 8));
@@ -537,7 +541,6 @@ namespace UI {
         SectionLabel(TR("UPDATE", "更新设置"), p);
         ImGui::Text("%s", TR("Update Interval (frames)", "更新间隔（帧数）"));
         FancySliderInt("updInt", &m.performance.updateInterval, 1, 10, "%.0f", p);
-        RowCheck(TR("Dynamic Update", "动态更新"), &m.performance.enableDynamicUpdate, p);
 
         ImGui::Dummy(ImVec2(0, 8));
         SectionLabel(TR("DISTANCE FILTER", "距离过滤"), p);
@@ -546,8 +549,6 @@ namespace UI {
         if (m.performance.enableDistanceFilter) {
             ImGui::Text("%s", TR("Max Draw Distance", "最大绘制距离"));
             FancySlider("maxDist", &m.performance.maxDrawDistance, 1000.0f, 15000.0f, "%.0f", p);
-            ImGui::Text("%s", TR("C4 Max Distance", "C4最大距离"));
-            FancySlider("c4Dist", &m.performance.c4MaxDistance, 1000.0f, 10000.0f, "%.0f", p);
         }
 
         ImGui::Dummy(ImVec2(0, 8));
@@ -570,34 +571,28 @@ namespace UI {
         if (ImGui::Button(TR("Performance", "性能模式"), ImVec2(130, 0))) {
             m.performance.updateInterval = 5;
             m.performance.maxDrawDistance = 5000.0f;
-            m.performance.c4MaxDistance = 3000.0f;
             m.performance.enableLOD = true;
             m.performance.lodDistance1 = 2000.0f;
             m.performance.lodDistance2 = 4000.0f;
             m.performance.enableDistanceFilter = true;
-            m.performance.enableDynamicUpdate = true;
             m.performance.enableWeaponCache = true;
         }
         ImGui::SameLine();
         if (ImGui::Button(TR("Balanced", "均衡模式"), ImVec2(130, 0))) {
             m.performance.updateInterval = 3;
             m.performance.maxDrawDistance = 8000.0f;
-            m.performance.c4MaxDistance = 5000.0f;
             m.performance.enableLOD = true;
             m.performance.lodDistance1 = 3000.0f;
             m.performance.lodDistance2 = 6000.0f;
             m.performance.enableDistanceFilter = true;
-            m.performance.enableDynamicUpdate = true;
             m.performance.enableWeaponCache = true;
         }
         ImGui::SameLine();
         if (ImGui::Button(TR("Quality", "质量模式"), ImVec2(130, 0))) {
             m.performance.updateInterval = 1;
             m.performance.maxDrawDistance = 12000.0f;
-            m.performance.c4MaxDistance = 8000.0f;
             m.performance.enableLOD = false;
             m.performance.enableDistanceFilter = false;
-            m.performance.enableDynamicUpdate = true;
             m.performance.enableWeaponCache = true;
         }
 
@@ -643,24 +638,6 @@ namespace UI {
             &m.RayColorVisible.x, ImGuiColorEditFlags_NoInputs);
         ImGui::ColorEdit4(TR("Ray Invisible", "射线-不可见"),
             &m.RayColorInvisible.x, ImGuiColorEditFlags_NoInputs);
-
-        ImGui::Dummy(ImVec2(0, 8));
-        SectionLabel(TR("WINDOW APPEARANCE", "窗口外观"), p);
-        ImGui::Text("%s", TR("Window Transparency", "窗口透明度"));
-        FancySlider("wAlpha", &m.WindowAlpha, 0.4f, 1.0f, "%.2f", p);
-        ImGui::Text("%s", TR("UI Corner Radius", "界面圆角"));
-        FancySlider("wRound", &m.WindowRound, 0.0f, 14.0f, "%.0f", p);
-        ImGui::Text("%s", TR("Global Font Scale", "全局字体缩放"));
-        FancySlider("fontScale", &m.FontScale, 0.7f, 1.4f, "%.2f", p);
-
-        ImGui::Dummy(ImVec2(0, 8));
-        SectionLabel(TR("LAYOUT SPACING", "布局间距"), p);
-        ImGui::Text("%s", TR("Item Spacing", "元素间距"));
-        FancySlider("itemSp", &m.ItemSpacing, 4.0f, 12.0f, "%.0f", p);
-        ImGui::Text("%s", TR("Frame Padding X", "框架水平内边距"));
-        FancySlider("fpX", &m.FramePaddingX, 3.0f, 10.0f, "%.0f", p);
-        ImGui::Text("%s", TR("Frame Padding Y", "框架垂直内边距"));
-        FancySlider("fpY", &m.FramePaddingY, 3.0f, 10.0f, "%.0f", p);
 
         // ==================== 调试信息 ====================
         ImGui::Dummy(ImVec2(0, 8));
@@ -959,7 +936,6 @@ namespace UI {
     void Draw(AppState& st, const Theme::Palette& p, float dt, ImFont* bigFont) {
         st.themeT = Approach(st.themeT, st.dark ? 1.0f : 0.0f, dt, 8.0f);
         st.beams.Update(dt);
-        st.burst.Update(dt);
 
         if (!st.menu) return;
         if (st.menuScale < 0.005f) return;
@@ -1002,8 +978,10 @@ namespace UI {
         float halfW = (cmax.x - cmin.x) * 0.5f * s;
         float halfH = (cmax.y - cmin.y) * 0.5f * s;
 
-        ImVec2 clipMin(center.x - halfW, center.y - halfH);
-        ImVec2 clipMax(center.x + halfW, center.y + halfH);
+        // Expand clip rect to include shadow margin (22.0f)
+        constexpr float shadowMargin = 22.0f;
+        ImVec2 clipMin(center.x - halfW - shadowMargin, center.y - halfH - shadowMargin);
+        ImVec2 clipMax(center.x + halfW + shadowMargin, center.y + halfH + shadowMargin);
 
         ImGui::PushClipRect(clipMin, clipMax, true);
 
@@ -1030,7 +1008,6 @@ namespace UI {
         ImGui::EndChild();
 
         BottomNav(st, p, cmin, cmax);
-        st.burst.Draw(dl);
 
         ImGui::PopClipRect();
 

@@ -88,9 +88,6 @@ namespace Cheat
     void UpdateDebugEntityList();
     void RunAimbot();
     void DrawESP(ImDrawList* drawList);
-    bool InitSilentAimHook();
-    void CleanupSilentAimHook();
-    void UpdateSilentAimCache();
     void RunThirdPerson();
     bool InitThirdPersonHook();
     void CleanupThirdPersonHook();

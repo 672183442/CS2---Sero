@@ -70,12 +70,10 @@
     <ClInclude Include="Main\core\internal_renderer.h" />
     <ClInclude Include="Main\core\memory\memory.hpp" />
     <ClInclude Include="Main\core\runtime_offsets.hpp" />
-    <ClInclude Include="Main\core\renderer\internal_renderer.h" />
     <ClInclude Include="Main\effects.h" />
     <ClInclude Include="Main\features\cheat.hpp" />
     <ClInclude Include="Main\menu.h" />
     <ClInclude Include="Main\theme.h" />
-    <ClInclude Include="Main\theme.hpp" />
     <ClInclude Include="Main\ui.h" />
     <ClInclude Include="Main\utils\lang.hpp" />
     <ClInclude Include="Main\utils\math\vector.hpp" />
@@ -185,7 +183,7 @@
     <Link>
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalLibraryDirectories>C:\Users\Administrator\Desktop\CS2---Sero-main\minhook_debug_x64\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalLibraryDirectories>$(ProjectDir)minhook_debug_x64\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
       <AdditionalDependencies>d3d11.lib;dxgi.lib;minhook.x64d.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
     <Manifest>
@@ -207,7 +205,7 @@
     <Link>
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalLibraryDirectories>C:\Users\Administrator\Desktop\CS2---Sero-main\minhook_debug_x64\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalLibraryDirectories>$(ProjectDir)minhook_debug_x64\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
       <AdditionalDependencies>d3d11.lib;dxgi.lib;minhook.x64d.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
     <Manifest>

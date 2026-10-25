@@ -76,36 +76,6 @@ namespace Theme {
         return r;
     }
 
-    // ★ 新增：整体缩放 Palette 的 alpha
-    Palette ScaleAlpha(const Palette& p, float alpha) {
-        if (alpha >= 0.999f) return p;
-        if (alpha <= 0.001f) alpha = 0.001f;
-
-        auto scale = [alpha](ImU32 c) -> ImU32 {
-            ImU32 a = (c >> 24) & 0xFF;
-            a = (ImU32)(a * alpha);
-            if (a > 255) a = 255;
-            return (c & 0x00FFFFFF) | (a << 24);
-            };
-
-        Palette r = p;
-        r.bg = scale(p.bg);
-        r.card = scale(p.card);
-        r.cardBorder = scale(p.cardBorder);
-        r.dotGrid = scale(p.dotGrid);
-        r.text = scale(p.text);
-        r.textDim = scale(p.textDim);
-        r.accent = scale(p.accent);
-        r.accentHover = scale(p.accentHover);
-        r.accentSoft = scale(p.accentSoft);
-        r.track = scale(p.track);
-        r.danger = scale(p.danger);
-        r.dangerSoft = scale(p.dangerSoft);
-        r.success = scale(p.success);
-        r.navBar = scale(p.navBar);
-        r.shadow = scale(p.shadow);
-        return r;
-    }
 
     void ApplyStyle(const Palette& p) {
         ImGuiStyle& s = ImGui::GetStyle();

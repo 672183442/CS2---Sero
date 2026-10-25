@@ -112,12 +112,13 @@ namespace {
         if (!address) return {};
 
         std::array<char, 256> buffer{};
+        // Bulk read up to 256 bytes at once instead of per-character reads
+        if (!memory::ReadRaw(address, buffer.data(), buffer.size())) return {};
+        
+        // Find null terminator
         std::size_t length = 0;
-        while (length + 1 < buffer.size()) {
-            char value = 0;
-            if (!memory::ReadRaw(address + length, &value, sizeof(value))) return {};
-            if (!value) break;
-            buffer[length++] = value;
+        while (length < buffer.size() && buffer[length] != '\0') {
+            ++length;
         }
         return std::string(buffer.data(), length);
     }
@@ -127,11 +128,21 @@ namespace {
 
         std::string result;
         result.reserve(maxLength);
-        for (std::size_t index = 0; index < maxLength; ++index) {
-            char value = 0;
-            if (!memory::ReadRaw(address + index, &value, sizeof(value))) return {};
-            if (!value) break;
-            result.push_back(value);
+        
+        // Read in chunks for better performance
+        constexpr std::size_t kChunkSize = 64;
+        std::array<char, kChunkSize> chunk{};
+        
+        for (std::size_t offset = 0; offset < maxLength; offset += kChunkSize) {
+            std::size_t toRead = (std::min)(kChunkSize, maxLength - offset);
+            if (!memory::ReadRaw(address + offset, chunk.data(), toRead)) return {};
+            
+            for (std::size_t i = 0; i < toRead; ++i) {
+                if (chunk[i] == '\0') {
+                    return result;
+                }
+                result.push_back(chunk[i]);
+            }
         }
         return result;
     }

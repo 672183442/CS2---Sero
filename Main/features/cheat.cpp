@@ -32,7 +32,6 @@ namespace Cheat
     std::vector<DroppedWeaponInfo> droppedWeapons;
     static std::unordered_map<uintptr_t, GrenadeInfo> g_grenadeMap;
     static std::unordered_map<uintptr_t, DroppedWeaponInfo> g_droppedWeaponMap;
-    static bool g_SilentAimHookReady = false;
     static volatile LONG g_localSpottedBit = -1;
     static float g_ThirdPersonProgress = 0.0f;
     static bool g_ThirdPersonHookReady = false;
@@ -151,10 +150,11 @@ namespace Cheat
         return true;
     }
 
+    static void ClearDesignNameCache();
+
     static void ClearRuntimeCache() {
         std::lock_guard<std::mutex> lock(dataMutex);
         enemies.clear();
-        enemies.shrink_to_fit();
         localPlayer = {};
         hasAimTarget = false;
         aimTargetPosition = { 0,0,0 };
@@ -166,6 +166,7 @@ namespace Cheat
         g_grenadeMap.clear();
         droppedWeapons.clear();
         g_droppedWeaponMap.clear();
+        ClearDesignNameCache();
     }
 
     std::string GetWeaponNameCached(uint16_t itemDef) {
@@ -179,8 +180,19 @@ namespace Cheat
         return name;
     }
 
+    // Design name cache: entity pointer -> (name, frame counter)
+    static std::unordered_map<uintptr_t, std::pair<std::string, uint64_t>> g_designNameCache;
+    static uint64_t g_designNameCacheEpoch = 0;
+
     static std::string GetEntityDesignName(uintptr_t entity) {
         if (!entity) return "";
+        
+        // Check cache first (valid for 60 frames)
+        auto it = g_designNameCache.find(entity);
+        if (it != g_designNameCache.end() && g_designNameCacheEpoch - it->second.second < 60) {
+            return it->second.first;
+        }
+        
         uintptr_t pIdentity = memory::Read<uintptr_t>(entity + 0x10);
         if (!pIdentity || pIdentity < 0x10000) return "";
         const uintptr_t kCandidates[] = { 0x20, 0x18, 0x28, 0x30, 0x10, 0x38, 0x40, 0x08, 0x48, 0x50 };
@@ -188,11 +200,15 @@ namespace Cheat
             uintptr_t pString = memory::Read<uintptr_t>(pIdentity + off);
             if (!pString || pString < 0x10000) continue;
             if (pString > 0x00007FFFFFFFFFFFULL) continue;
+            
+            // Bulk read up to 96 bytes at once
             char buffer[96] = {};
+            if (!memory::ReadRaw(pString, buffer, sizeof(buffer) - 1)) continue;
+            
             int validLen = 0;
             bool valid = true;
             for (int i = 0; i < 95; ++i) {
-                char c = memory::Read<char>(pString + i);
+                char c = buffer[i];
                 if (c == '\0') { validLen = i; break; }
                 const bool isLower = (c >= 'a' && c <= 'z');
                 const bool isUpper = (c >= 'A' && c <= 'Z');
@@ -200,11 +216,19 @@ namespace Cheat
                 const bool isPunct = (c == '_' || c == '-' || c == '.');
                 const bool isSlash = (c == '/' || c == '\\');
                 if (!(isLower || isUpper || isDigit || isPunct || isSlash)) { valid = false; break; }
-                buffer[i] = c;
             }
-            if (valid && validLen >= 3) return std::string(buffer, validLen);
+            if (valid && validLen >= 3) {
+                std::string result(buffer, validLen);
+                g_designNameCache[entity] = { result, g_designNameCacheEpoch };
+                return result;
+            }
         }
         return "";
+    }
+    
+    static void ClearDesignNameCache() {
+        g_designNameCache.clear();
+        g_designNameCacheEpoch++;
     }
 
     void UpdateDebugEntityList() {
@@ -343,15 +367,25 @@ namespace Cheat
     }
 
     void UpdateGrenades() {
+        // Feature gate: skip if no grenade ESP features are enabled
+        if (!g_MenuData.bGrenadeESP && !g_MenuData.bGrenadeThrown) {
+            std::lock_guard<std::mutex> lock(dataMutex);
+            grenades.clear();
+            g_grenadeMap.clear();
+            return;
+        }
+        
         uintptr_t client = memory::clientBase;
         if (!client) return;
         uintptr_t entitySystem = memory::Read<uintptr_t>(client + cs2_dumper::offsets::client_dll::dwGameEntitySystem);
         if (!entitySystem) return;
         uint32_t highestIndex = memory::Read<uint32_t>(entitySystem + cs2_dumper::offsets::client_dll::dwGameEntitySystem_highestEntityIndex);
         if (highestIndex > 0x10000) highestIndex = 0;
+        // Trust highestEntityIndex, only cap at reasonable maximum
         uint32_t scanLimit = highestIndex;
-        if (scanLimit < 2048) scanLimit = 2048;
         if (scanLimit > 8192) scanLimit = 8192;
+        if (scanLimit == 0) return;
+        
         uintptr_t entityList = memory::Read<uintptr_t>(client + cs2_dumper::offsets::client_dll::dwEntityList);
         if (!entityList) return;
         float deltaTime = ImGui::GetIO().DeltaTime;
@@ -469,8 +503,9 @@ namespace Cheat
         if (entitySystem) {
             highest = memory::Read<uint32_t>(entitySystem + cs2_dumper::offsets::client_dll::dwGameEntitySystem_highestEntityIndex);
         }
-        if (highest < 4096) highest = 4096;
+        // Trust highestEntityIndex, only cap at reasonable maximum
         if (highest > 8192) highest = 8192;
+        if (highest == 0) return;
         std::unordered_set<uintptr_t> foundDropped;
         std::unordered_map<uintptr_t, std::vector<std::string>> carriedGrenadeMap;
         bool foundCarriedC4 = false;
@@ -792,7 +827,6 @@ namespace Cheat
         vec3 eyePos = { localPos.x + viewOffset.x, localPos.y + viewOffset.y, localPos.z + viewOffset.z };
 
         g_localSpottedBit = ResolveLocalSpottedBit(client, localPlayerPawn);
-        UpdateSilentAimCache();
 
         {
             std::lock_guard<std::mutex> lock(dataMutex);
@@ -981,6 +1015,11 @@ namespace Cheat
     // ============================================================
     // RunAimbot：包含自动瞄准 / 静默自瞄(改弹道) / 后坐力补偿
     // ============================================================
+    // ★ RCS 基线追踪：只在激活期间补偿增量后坐力
+    static vec3 g_rcsBaseline = { 0, 0, 0 };
+    static bool g_rcsBaselineValid = false;
+    static bool g_prevAimKeyPressed = false;
+
     void RunAimbot() {
         hasAimTarget = false;
 
@@ -991,10 +1030,32 @@ namespace Cheat
 
         // ★ 静默自瞄也可以独立于"自动瞄准"触发目标搜索
         bool needSearch = g_MenuData.bAutoAim || g_MenuData.bSilentAimAngle;
-        if (!needSearch) return;
+        if (!needSearch) {
+            g_rcsBaselineValid = false;
+            g_prevAimKeyPressed = false;
+            return;
+        }
 
         int selectedKey = aimKeyMap[g_MenuData.aimKey];
-        if (!(GetAsyncKeyState(selectedKey) & 0x8000)) return;
+        bool aimKeyPressed = (GetAsyncKeyState(selectedKey) & 0x8000) != 0;
+
+        // ★ 按键刚按下时记录 RCS 基线
+        if (aimKeyPressed && !g_prevAimKeyPressed) {
+            g_rcsBaselineValid = false;
+            uintptr_t punchSvc = memory::Read<uintptr_t>(
+                localPlayer.pawn + cs2_dumper::schemas::client_dll::C_CSPlayerPawn::m_pAimPunchServices);
+            if (punchSvc && memory::IsReadable(punchSvc, sizeof(vec3))) {
+                g_rcsBaseline = memory::Read<vec3>(
+                    punchSvc + cs2_dumper::schemas::client_dll::CCSPlayer_AimPunchServices::m_predictableBaseAngle);
+                g_rcsBaselineValid = true;
+            }
+        }
+        if (!aimKeyPressed) {
+            g_rcsBaselineValid = false;
+        }
+        g_prevAimKeyPressed = aimKeyPressed;
+
+        if (!aimKeyPressed) return;
         if (!localPlayer.isValid) return;
 
         const vec3& eyePos = localPlayer.eyePosition;
@@ -1008,6 +1069,11 @@ namespace Cheat
         uintptr_t entityList = memory::Read<uintptr_t>(memory::clientBase + cs2_dumper::offsets::client_dll::dwEntityList);
         if (!entityList) return;
         uint8_t myTeam = memory::Read<uint8_t>(localPlayer.pawn + cs2_dumper::schemas::client_dll::C_BaseEntity::m_iTeamNum);
+
+        // ★ 预测时间（秒）
+        float predTime = g_MenuData.fAimPrediction;
+        if (predTime < 0.0f) predTime = 0.0f;
+        if (predTime > 0.5f) predTime = 0.5f;
 
         for (int i = 1; i < 64; i++) {
             uintptr_t listEntry = memory::Read<uintptr_t>(entityList + 0x10 + 0x8 * (i >> 9));
@@ -1056,6 +1122,17 @@ namespace Cheat
                 aimPoint.z -= duckAmount * viewOffset.z * 0.6f * ratio;
             }
 
+            // ★ 移动预测：读取敌人绝对速度，按提前量偏移瞄准点
+            if (predTime > 0.001f) {
+                vec3 enemyVel = memory::Read<vec3>(enemyPawn + 0x3F8); // m_vecAbsVelocity
+                float velMag = std::sqrt(enemyVel.x * enemyVel.x + enemyVel.y * enemyVel.y + enemyVel.z * enemyVel.z);
+                if (velMag > 5.0f && velMag < 2000.0f) {
+                    aimPoint.x += enemyVel.x * predTime;
+                    aimPoint.y += enemyVel.y * predTime;
+                    aimPoint.z += enemyVel.z * predTime;
+                }
+            }
+
             vec2 aim = CalcAngle(eyePos, aimPoint);
             float fov = GetFOV(viewAngle, aim);
             if (fov < bestFOV) {
@@ -1066,6 +1143,22 @@ namespace Cheat
             }
         }
 
+        // ★ 计算 RCS 增量（当前 punch - 基线 punch）
+        vec3 rcsDelta = { 0, 0, 0 };
+        {
+            uintptr_t aimPunchServices = memory::Read<uintptr_t>(
+                localPlayer.pawn + cs2_dumper::schemas::client_dll::C_CSPlayerPawn::m_pAimPunchServices);
+            if (aimPunchServices && memory::IsReadable(aimPunchServices, sizeof(vec3))) {
+                vec3 curPunch = memory::Read<vec3>(
+                    aimPunchServices + cs2_dumper::schemas::client_dll::CCSPlayer_AimPunchServices::m_predictableBaseAngle);
+                if (g_rcsBaselineValid) {
+                    rcsDelta = { curPunch.x - g_rcsBaseline.x, curPunch.y - g_rcsBaseline.y, curPunch.z - g_rcsBaseline.z };
+                } else {
+                    rcsDelta = curPunch;
+                }
+            }
+        }
+
         if (found) {
             hasAimTarget = true;
             aimTargetPosition = targetPos;
@@ -1073,25 +1166,18 @@ namespace Cheat
             // ===== ★ 写入静默弹道角度（含后坐力补偿）=====
             if (g_silentAngleBlock && g_MenuData.bSilentAimAngle) {
                 float pitch = bestAngle.x;
-                float yaw = bestAngle.y;
+                float yaw   = bestAngle.y;
 
-                uintptr_t aimPunchServices = memory::Read<uintptr_t>(
-                    localPlayer.pawn + cs2_dumper::schemas::client_dll::C_CSPlayerPawn::m_pAimPunchServices);
-                if (aimPunchServices && memory::IsReadable(aimPunchServices, sizeof(vec3))) {
-                    vec3 aimPunch = memory::Read<vec3>(
-                        aimPunchServices + cs2_dumper::schemas::client_dll::CCSPlayer_AimPunchServices::m_predictableBaseAngle);
+                float rcsScale = g_MenuData.fSilentAimRcsScale;
+                if (rcsScale < 0.0f) rcsScale = 0.0f;
+                if (rcsScale > 2.0f) rcsScale = 2.0f;
 
-                    float rcsScale = g_MenuData.fSilentAimRcsScale;
-                    if (rcsScale < 0.0f) rcsScale = 0.0f;
-                    if (rcsScale > 2.0f) rcsScale = 2.0f;
-
-                    pitch -= aimPunch.x * 2.0f * rcsScale;
-                    yaw -= aimPunch.y * 2.0f * rcsScale;
-                }
+                pitch -= rcsDelta.x * 2.0f * rcsScale;
+                yaw   -= rcsDelta.y * 2.0f * rcsScale;
 
                 if (pitch > 89.0f) pitch = 89.0f;
                 if (pitch < -89.0f) pitch = -89.0f;
-                while (yaw > 180.0f) yaw -= 360.0f;
+                while (yaw > 180.0f)  yaw -= 360.0f;
                 while (yaw < -180.0f) yaw += 360.0f;
 
                 *reinterpret_cast<float*>(g_silentAngleBlock + 0x04) = pitch;
@@ -1106,14 +1192,8 @@ namespace Cheat
 
         if (g_MenuData.bSilentAim) {
             vec3 compensatedAngle = { bestAngle.x, bestAngle.y, 0.0f };
-            uintptr_t aimPunchServices = memory::Read<uintptr_t>(
-                localPlayer.pawn + cs2_dumper::schemas::client_dll::C_CSPlayerPawn::m_pAimPunchServices);
-            if (aimPunchServices && memory::IsReadable(aimPunchServices, sizeof(vec3))) {
-                vec3 aimPunch = memory::Read<vec3>(
-                    aimPunchServices + cs2_dumper::schemas::client_dll::CCSPlayer_AimPunchServices::m_predictableBaseAngle);
-                compensatedAngle.x -= aimPunch.x * 2.0f;
-                compensatedAngle.y -= aimPunch.y * 2.0f;
-            }
+            compensatedAngle.x -= rcsDelta.x * 2.0f;
+            compensatedAngle.y -= rcsDelta.y * 2.0f;
             if (compensatedAngle.x > 89.0f) compensatedAngle.x = 89.0f;
             if (compensatedAngle.x < -89.0f) compensatedAngle.x = -89.0f;
             compensatedAngle.y = NormalizeAngle(compensatedAngle.y);
@@ -1123,27 +1203,30 @@ namespace Cheat
         }
         else {
             vec2 compensatedTarget = bestAngle;
-            uintptr_t aimPunchServices = memory::Read<uintptr_t>(localPlayer.pawn + cs2_dumper::schemas::client_dll::C_CSPlayerPawn::m_pAimPunchServices);
-            if (aimPunchServices) {
-                vec3 aimPunch = memory::Read<vec3>(aimPunchServices + cs2_dumper::schemas::client_dll::CCSPlayer_AimPunchServices::m_predictableBaseAngle);
-                compensatedTarget.x -= aimPunch.x * 2.0f;
-                compensatedTarget.y -= aimPunch.y * 2.0f;
-            }
+            compensatedTarget.x -= rcsDelta.x * 2.0f;
+            compensatedTarget.y -= rcsDelta.y * 2.0f;
             if (compensatedTarget.x > 89.0f) compensatedTarget.x = 89.0f;
             if (compensatedTarget.x < -89.0f) compensatedTarget.x = -89.0f;
             compensatedTarget.y = NormalizeAngle(compensatedTarget.y);
-            float smooth = g_MenuData.fAimSmooth;
-            if (smooth < 1.0f) smooth = 1.0f;
             float remainingPitch = NormalizeAngle(compensatedTarget.x - viewAngle.x);
-            float remainingYaw = NormalizeAngle(compensatedTarget.y - viewAngle.y);
-            const float arriveThreshold = 0.1f;
-            float deltaPitch, deltaYaw;
+            float remainingYaw   = NormalizeAngle(compensatedTarget.y - viewAngle.y);
+
+            // ★ 指数平滑：消除抖动，任何 smooth 值都不会突变
+            float dt = ImGui::GetIO().DeltaTime;
+            if (dt <= 0.0f || dt > 0.2f) dt = 0.016f;
+            float smooth = g_MenuData.fAimSmooth;
+            if (smooth < 0.1f) smooth = 0.1f;
+            float k = 20.0f / smooth;
+            float factor = 1.0f - expf(-k * dt);
+
+            float deltaPitch = remainingPitch * factor;
+            float deltaYaw   = remainingYaw * factor;
+
+            // ★ 最小阈值：非常接近时直接吸附，避免无限趋近
+            const float arriveThreshold = 0.05f;
             if (std::abs(remainingPitch) < arriveThreshold && std::abs(remainingYaw) < arriveThreshold) {
-                deltaPitch = remainingPitch; deltaYaw = remainingYaw;
-            }
-            else {
-                deltaPitch = remainingPitch / smooth;
-                deltaYaw = remainingYaw / smooth;
+                deltaPitch = remainingPitch;
+                deltaYaw   = remainingYaw;
             }
             float sensFactor = 0.022f;
             float moveX = -deltaYaw / sensFactor;
@@ -1406,25 +1489,16 @@ namespace Cheat
             drawList->AddLine(ImVec2(cx, cy - 10), ImVec2(cx, cy + 10), scopeColor, 1.0f);
         }
 
-        std::vector<EnemyInfo> snapEnemies;
-        viewMatrix snapVm;
-        C4Info snapC4;
-        vec3 snapLocalEye;
-        vec3 snapLocalPos;
-        vec2 snapLocalViewAngle;
-        std::vector<GrenadeInfo> snapGrenades;
-        std::vector<DroppedWeaponInfo> snapDroppedWeapons;
-        {
-            std::lock_guard<std::mutex> lock(dataMutex);
-            snapEnemies = enemies;
-            snapVm = vm;
-            snapC4 = c4Info;
-            snapLocalEye = localPlayer.eyePosition;
-            snapLocalPos = localPlayer.position;
-            snapLocalViewAngle = localPlayer.viewAngle;
-            snapGrenades = grenades;
-            snapDroppedWeapons = droppedWeapons;
-        }
+        // Use const references instead of deep copy since UpdateEntities and DrawESP 
+        // run on the same thread in sequence
+        const auto& snapEnemies = enemies;
+        const auto& snapVm = vm;
+        const auto& snapC4 = c4Info;
+        const auto& snapLocalEye = localPlayer.eyePosition;
+        const auto& snapLocalPos = localPlayer.position;
+        const auto& snapLocalViewAngle = localPlayer.viewAngle;
+        const auto& snapGrenades = grenades;
+        const auto& snapDroppedWeapons = droppedWeapons;
 
         ImU32 boxColorVisible = IM_COL32((int)(g_MenuData.BoxColorVisible.x * 255), (int)(g_MenuData.BoxColorVisible.y * 255), (int)(g_MenuData.BoxColorVisible.z * 255), (int)(g_MenuData.BoxColorVisible.w * 255));
         ImU32 boxColorInvisible = IM_COL32((int)(g_MenuData.BoxColorInvisible.x * 255), (int)(g_MenuData.BoxColorInvisible.y * 255), (int)(g_MenuData.BoxColorInvisible.z * 255), (int)(g_MenuData.BoxColorInvisible.w * 255));
@@ -1716,157 +1790,6 @@ namespace Cheat
     }
 
     void* g_SilentAimOrigin = nullptr;
-    void* g_SilentAimHookTarget = nullptr;
-    using SilentAimFunc = int64_t(*)(int* a1, int64_t a2, char a3, int64_t arg1, int64_t arg2, int64_t arg3);
-
-    static uintptr_t g_cachedClientBase = 0;
-    static uintptr_t g_cachedEntityList = 0;
-    static volatile LONG g_cacheValid = 0;
-
-    inline uint64_t SafeReadU64(uintptr_t address) { if (address < 0x10000) return 0; __try { return *(uint64_t*)address; } __except (EXCEPTION_EXECUTE_HANDLER) { return 0; } }
-    inline uint8_t SafeReadU8(uintptr_t address) { if (address < 0x10000) return 0; __try { return *(uint8_t*)address; } __except (EXCEPTION_EXECUTE_HANDLER) { return 0; } }
-    inline uint32_t SafeReadU32(uintptr_t address) { if (address < 0x10000) return 0; __try { return *(uint32_t*)address; } __except (EXCEPTION_EXECUTE_HANDLER) { return 0; } }
-    inline float SafeReadF32(uintptr_t address) { if (address < 0x10000) return 0.0f; __try { return *(float*)address; } __except (EXCEPTION_EXECUTE_HANDLER) { return 0.0f; } }
-
-    void UpdateSilentAimCache() {
-        uintptr_t clientBase = memory::clientBase;
-        if (!clientBase) { InterlockedExchange(&g_cacheValid, 0); return; }
-        uint64_t entityList = SafeReadU64(clientBase + cs2_dumper::offsets::client_dll::dwEntityList);
-        if (!entityList) { InterlockedExchange(&g_cacheValid, 0); return; }
-        g_cachedClientBase = clientBase;
-        g_cachedEntityList = entityList;
-        InterlockedExchange(&g_cacheValid, 1);
-    }
-
-    uint64_t GetSilentAimPlayer(int i) {
-        if (!g_cacheValid) return 0;
-        if (i < 0 || i > 63) return 0;
-        uint64_t listEntry = SafeReadU64(g_cachedEntityList + 0x10 + 0x8 * (i >> 9));
-        if (!listEntry) return 0;
-        uint64_t controller = SafeReadU64(listEntry + 0x70 * (i & 0x1FF));
-        if (!controller) return 0;
-        uint32_t playerPawnHandle = SafeReadU32(controller + cs2_dumper::schemas::client_dll::CBasePlayerController::m_hPawn);
-        if (!playerPawnHandle) return 0;
-        uint32_t pawnIndex = playerPawnHandle & 0x7FFF;
-        uint64_t pawnListEntry = SafeReadU64(g_cachedEntityList + 0x10 + 0x8 * (pawnIndex >> 9));
-        if (!pawnListEntry) return 0;
-        return SafeReadU64(pawnListEntry + 0x70 * (pawnIndex & 0x1FF));
-    }
-
-    vec2 GetSilentAimTargetAngle(uint64_t playerPtr, uint64_t localPlayer) {
-        if (!playerPtr || !localPlayer) return { 0.0f, 0.0f };
-        vec3 targetFeet = { SafeReadF32(playerPtr + cs2_dumper::schemas::client_dll::C_BasePlayerPawn::m_vOldOrigin), SafeReadF32(playerPtr + cs2_dumper::schemas::client_dll::C_BasePlayerPawn::m_vOldOrigin + 4), SafeReadF32(playerPtr + cs2_dumper::schemas::client_dll::C_BasePlayerPawn::m_vOldOrigin + 8) };
-        vec3 targetOffset = { SafeReadF32(playerPtr + cs2_dumper::schemas::client_dll::C_BaseModelEntity::m_vecViewOffset), SafeReadF32(playerPtr + cs2_dumper::schemas::client_dll::C_BaseModelEntity::m_vecViewOffset + 4), SafeReadF32(playerPtr + cs2_dumper::schemas::client_dll::C_BaseModelEntity::m_vecViewOffset + 8) };
-        vec3 localFeet = { SafeReadF32(localPlayer + cs2_dumper::schemas::client_dll::C_BasePlayerPawn::m_vOldOrigin), SafeReadF32(localPlayer + cs2_dumper::schemas::client_dll::C_BasePlayerPawn::m_vOldOrigin + 4), SafeReadF32(localPlayer + cs2_dumper::schemas::client_dll::C_BasePlayerPawn::m_vOldOrigin + 8) };
-        vec3 localOffset = { SafeReadF32(localPlayer + cs2_dumper::schemas::client_dll::C_BaseModelEntity::m_vecViewOffset), SafeReadF32(localPlayer + cs2_dumper::schemas::client_dll::C_BaseModelEntity::m_vecViewOffset + 4), SafeReadF32(localPlayer + cs2_dumper::schemas::client_dll::C_BaseModelEntity::m_vecViewOffset + 8) };
-        float duckAmount = 0.0f;
-        uint64_t movementServices = SafeReadU64(playerPtr + cs2_dumper::schemas::client_dll::C_BasePlayerPawn::m_pMovementServices);
-        if (movementServices) duckAmount = SafeReadF32(movementServices + cs2_dumper::schemas::client_dll::CCSPlayer_MovementServices::m_flDuckAmount);
-        vec3 targetHead = { targetFeet.x + targetOffset.x, targetFeet.y + targetOffset.y, targetFeet.z + targetOffset.z };
-        targetHead.z -= duckAmount * targetOffset.z * 0.6f;
-        vec3 localEye = { localFeet.x + localOffset.x, localFeet.y + localOffset.y, localFeet.z + localOffset.z };
-        vec2 angle = CalcAngle(localEye, targetHead);
-        angle.x = NormalizeAngle(angle.x);
-        angle.y = NormalizeAngle(angle.y);
-        uint64_t aimPunchServices = SafeReadU64(localPlayer + cs2_dumper::schemas::client_dll::C_CSPlayerPawn::m_pAimPunchServices);
-        if (aimPunchServices) {
-            float punchX = SafeReadF32(aimPunchServices + cs2_dumper::schemas::client_dll::CCSPlayer_AimPunchServices::m_predictableBaseAngle);
-            float punchY = SafeReadF32(aimPunchServices + cs2_dumper::schemas::client_dll::CCSPlayer_AimPunchServices::m_predictableBaseAngle + 4);
-            angle.x -= punchX * 2.0f;
-            angle.y -= punchY * 2.0f;
-        }
-        return angle;
-    }
-
-    int64_t SilentAimHook(int* a1, int64_t a2, char a3, int64_t arg1, int64_t arg2, int64_t arg3) {
-        __try {
-            if (!a1) return ((SilentAimFunc)g_SilentAimOrigin)(a1, a2, a3, arg1, arg2, arg3);
-
-
-            if (!a3) return ((SilentAimFunc)g_SilentAimOrigin)(a1, a2, a3, arg1, arg2, arg3);
-            bool silentAimEnabled = g_MenuData.bSilentAim;
-            bool visibleAim = g_MenuData.bVisibleAim;
-            bool aimFriends = g_MenuData.bAimFriends;
-            float aimFOV = g_MenuData.fAimFOV;
-            int aimKey = g_MenuData.aimKey;
-            if (!silentAimEnabled) return ((SilentAimFunc)g_SilentAimOrigin)(a1, a2, a3, arg1, arg2, arg3);
-            if (aimKey < 0 || aimKey >= (int)(sizeof(aimKeyMap) / sizeof(aimKeyMap[0]))) return ((SilentAimFunc)g_SilentAimOrigin)(a1, a2, a3, arg1, arg2, arg3);
-            int selectedKey = aimKeyMap[aimKey];
-            if (!(GetAsyncKeyState(selectedKey) & 0x8000)) return ((SilentAimFunc)g_SilentAimOrigin)(a1, a2, a3, arg1, arg2, arg3);
-            if (!g_cacheValid) return ((SilentAimFunc)g_SilentAimOrigin)(a1, a2, a3, arg1, arg2, arg3);
-            uint64_t localPtr = SafeReadU64(g_cachedClientBase + cs2_dumper::offsets::client_dll::dwLocalPlayerPawn);
-            if (!localPtr) return ((SilentAimFunc)g_SilentAimOrigin)(a1, a2, a3, arg1, arg2, arg3);
-            uint8_t myTid = SafeReadU8(localPtr + cs2_dumper::schemas::client_dll::C_BaseEntity::m_iTeamNum);
-            float viewAngleX = SafeReadF32(g_cachedClientBase + cs2_dumper::offsets::client_dll::dwViewAngles);
-            float viewAngleY = SafeReadF32(g_cachedClientBase + cs2_dumper::offsets::client_dll::dwViewAngles + 0x4);
-            float closedTarget = 999999.0f;
-            float targetX = 0.0f, targetY = 0.0f;
-            bool findOut = false;
-            for (int i = 0; i < 64; i++) {
-                uint64_t targetPtr = GetSilentAimPlayer(i);
-                if (!targetPtr) continue;
-                if (targetPtr == localPtr) continue;
-                uint8_t targetTid = SafeReadU8(targetPtr + cs2_dumper::schemas::client_dll::C_BaseEntity::m_iTeamNum);
-                if (targetTid == myTid && !aimFriends) continue;
-                uint8_t lifeState = SafeReadU8(targetPtr + cs2_dumper::schemas::client_dll::C_BaseEntity::m_lifeState);
-                if (lifeState != 0) continue;
-                if (visibleAim) {
-                    bool spotted = IsSpottedByLocal(static_cast<uintptr_t>(targetPtr));
-                    if (!spotted) continue;
-                }
-                vec2 getAngle = GetSilentAimTargetAngle(targetPtr, localPtr);
-                float diffX = NormalizeAngle(getAngle.x - viewAngleX);
-                float diffY = NormalizeAngle(getAngle.y - viewAngleY);
-                float dist = std::sqrt(diffX * diffX + diffY * diffY);
-                if (dist < closedTarget && dist < aimFOV) {
-                    findOut = true;
-                    closedTarget = dist;
-                    targetX = getAngle.x;
-                    targetY = getAngle.y;
-                }
-            }
-            if (findOut) {
-                if (targetX > 89.0f) targetX = 89.0f;
-                if (targetX < -89.0f) targetX = -89.0f;
-                targetY = NormalizeAngle(targetY);
-                a1[7] = *(int*)&targetX;
-                a1[8] = *(int*)&targetY;
-            }
-        }
-        __except (EXCEPTION_EXECUTE_HANDLER) {}
-        return ((SilentAimFunc)g_SilentAimOrigin)(a1, a2, a3, arg1, arg2, arg3);
-    }
-
-    bool InitSilentAimHook() {
-        if (g_SilentAimOrigin) { g_SilentAimHookReady = true; return true; }
-        try {
-            g_SilentAimHookReady = false;
-            g_SilentAimHookTarget = nullptr;
-            void* hookTarget = Scanner::PatternScan("client.dll", cs2_patterns::WriteSubtickFromEntry);
-            if (!hookTarget) return false;
-            if (MH_CreateHook(hookTarget, SilentAimHook, &g_SilentAimOrigin) != MH_OK) return false;
-            if (MH_EnableHook(hookTarget) != MH_OK) {
-                MH_RemoveHook(hookTarget);
-                g_SilentAimOrigin = nullptr;
-                return false;
-            }
-            g_SilentAimHookTarget = hookTarget;
-            g_SilentAimHookReady = true;
-            return true;
-        }
-        catch (...) { g_SilentAimHookReady = false; return false; }
-    }
-
-    void CleanupSilentAimHook() {
-        if (g_SilentAimHookTarget) {
-            MH_DisableHook(g_SilentAimHookTarget);
-            MH_RemoveHook(g_SilentAimHookTarget);
-        }
-        g_SilentAimHookTarget = nullptr;
-        g_SilentAimOrigin = nullptr;
-        g_SilentAimHookReady = false;
-    }
-
     void* g_OverrideViewOrigin = nullptr;
     void* g_OverrideViewTarget = nullptr;
     using OverrideViewFn = void(__fastcall*)(void*, void*);

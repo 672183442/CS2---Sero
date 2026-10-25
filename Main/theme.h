@@ -25,7 +25,4 @@ namespace Theme {
     void ApplyStyle(const Palette& p);
     ImVec4 U32ToVec4(ImU32 c);
 
-    // ★ 新增：把 Palette 所有颜色的 alpha 乘上 alpha（用于菜单淡入淡出）
-    Palette ScaleAlpha(const Palette& p, float alpha);
-
 } // namespace Theme

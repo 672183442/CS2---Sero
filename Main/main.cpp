@@ -83,7 +83,10 @@ static void ResetImGuiState()
 
 LRESULT __stdcall WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 {
-    if (uMsg == WM_KEYDOWN && wParam == VK_F4)
+    // ★ 菜单切换键：仅在游戏窗口前台时响应
+    bool isGameForeground = (GetForegroundWindow() == g_hwnd);
+    
+    if (uMsg == WM_KEYDOWN && wParam == VK_F4 && isGameForeground)
         g_ShowMenu = !g_ShowMenu;
 
     if (uMsg == WM_SIZE || uMsg == WM_ACTIVATE) {
@@ -96,8 +99,32 @@ LRESULT __stdcall WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
         }
     }
 
-    if (ImGui::GetCurrentContext() && ImGui_ImplWin32_WndProcHandler(hwnd, uMsg, wParam, lParam))
+    // ★ 菜单可见时显示光标，隐藏时交还控制权给游戏
+    if (uMsg == WM_SETCURSOR && g_ShowMenu) {
+        SetCursor(LoadCursor(nullptr, IDC_ARROW));
         return true;
+    }
+
+    if (ImGui::GetCurrentContext()) {
+        ImGuiIO& io = ImGui::GetIO();
+        io.MouseDrawCursor = g_ShowMenu;
+        
+        ImGui_ImplWin32_WndProcHandler(hwnd, uMsg, wParam, lParam);
+        
+        // ★ 菜单可见时，拦截所有鼠标键盘输入不传递给游戏
+        if (g_ShowMenu) {
+            switch (uMsg) {
+                case WM_LBUTTONDOWN: case WM_LBUTTONUP: case WM_LBUTTONDBLCLK:
+                case WM_RBUTTONDOWN: case WM_RBUTTONUP: case WM_RBUTTONDBLCLK:
+                case WM_MBUTTONDOWN: case WM_MBUTTONUP: case WM_MBUTTONDBLCLK:
+                case WM_MOUSEWHEEL: case WM_MOUSEMOVE:
+                case WM_KEYDOWN: case WM_KEYUP: case WM_CHAR:
+                case WM_SYSKEYDOWN: case WM_SYSKEYUP:
+                    return true;
+            }
+        }
+    }
+    
     WNDPROC targetWndProc = origin_wndProc_saved ? origin_wndProc_saved : origin_wndProc;
     if (targetWndProc && targetWndProc != WndProc)
         return CallWindowProc(targetWndProc, hwnd, uMsg, wParam, lParam);
@@ -129,7 +156,6 @@ long __stdcall my_present(IDXGISwapChain* _this, UINT a, UINT b)
             }
 
             g_pd3dDevice = currentDevice;
-            g_pd3dDevice->AddRef();
             g_pd3dDevice->GetImmediateContext(&g_pd3dContext);
             if (!g_pd3dContext) {
                 ResetImGuiState();
@@ -173,7 +199,7 @@ long __stdcall my_present(IDXGISwapChain* _this, UINT a, UINT b)
             }
 
             ImGuiIO& io = ImGui::GetIO();
-            io.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
+            io.IniFilename = nullptr;  // Disable ini file persistence
 
             if (!ImGui_ImplWin32_Init(g_hwnd) || !ImGui_ImplDX11_Init(g_pd3dDevice, g_pd3dContext)) {
                 ResetImGuiState();
@@ -222,10 +248,11 @@ long __stdcall my_present(IDXGISwapChain* _this, UINT a, UINT b)
 
 
 
-        // ★ 右 Shift 边缘检测切换菜单
+        // ★ 右 Shift 边缘检测切换菜单（仅游戏窗口前台时响应）
         {
             static bool prevRShift = false;
-            bool nowRShift = (GetAsyncKeyState(VK_RSHIFT) & 0x8000) != 0;
+            bool isGameForeground = (GetForegroundWindow() == g_hwnd);
+            bool nowRShift = isGameForeground && (GetAsyncKeyState(VK_RSHIFT) & 0x8000) != 0;
             if (nowRShift && !prevRShift) {
                 g_ShowMenu = !g_ShowMenu;
             }
@@ -364,7 +391,6 @@ BOOL __stdcall DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReser
         }
         break;
     case DLL_PROCESS_DETACH:
-        Cheat::CleanupSilentAimHook();
         Cheat::CleanupThirdPersonHook();
         Cheat::CleanupSilentAimAngleHook();    // ★ 新增
         if (origin_present) {

@@ -30,17 +30,4 @@ namespace Fx {
         bool inited = false;
     };
 
-    class ParticleBurst {
-    public:
-        void Emit(ImVec2 origin, ImU32 color, int count = 40);
-        void Update(float dt);
-        void Draw(ImDrawList* dl);
-        bool Active() const { return aliveCount > 0; }
-    private:
-        struct P { ImVec2 pos, vel; float life, maxLife, size; ImU32 col; bool alive; };
-        static const int kMax = 200;
-        P parts[kMax] = {};
-        int aliveCount = 0;
-    };
-
 } // namespace Fx

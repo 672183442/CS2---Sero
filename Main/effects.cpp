@@ -111,50 +111,5 @@ namespace Fx {
         dl->PopClipRect();
     }
 
-    void ParticleBurst::Emit(ImVec2 origin, ImU32 color, int count) {
-        for (int n = 0; n < count && aliveCount < kMax; n++) {
-            int idx = -1;
-            for (int i = 0; i < kMax; i++) if (!parts[i].alive) { idx = i; break; }
-            if (idx < 0) break;
-            P& p = parts[idx];
-            float ang = RndRange(0.0f, 6.2831853f);
-            float spd = RndRange(60, 260);
-            p.pos = origin;
-            p.vel = ImVec2(cosf(ang) * spd, sinf(ang) * spd);
-            p.maxLife = RndRange(0.4f, 0.9f);
-            p.life = p.maxLife;
-            p.size = RndRange(2.0f, 5.0f);
-            p.col = color;
-            p.alive = true;
-            aliveCount++;
-        }
-    }
-
-    void ParticleBurst::Update(float dt) {
-        for (int i = 0; i < kMax; i++) {
-            if (!parts[i].alive) continue;
-            P& p = parts[i];
-            p.vel.x *= (1.0f - 3.0f * dt);
-            p.vel.y = p.vel.y * (1.0f - 3.0f * dt) + 120.0f * dt;
-            p.pos.x += p.vel.x * dt;
-            p.pos.y += p.vel.y * dt;
-            p.life -= dt;
-            if (p.life <= 0.0f) { p.alive = false; aliveCount--; }
-        }
-    }
-
-    void ParticleBurst::Draw(ImDrawList* dl) {
-        for (int i = 0; i < kMax; i++) {
-            if (!parts[i].alive) continue;
-            P& p = parts[i];
-            float k = p.life / p.maxLife;
-            ImVec4 col = ImGui::ColorConvertU32ToFloat4(p.col);
-            col.w = k;
-            float s = p.size * (0.5f + 0.5f * k);
-            dl->AddRectFilled(ImVec2(p.pos.x - s, p.pos.y - s),
-                ImVec2(p.pos.x + s, p.pos.y + s),
-                ImGui::ColorConvertFloat4ToU32(col), 1.5f);
-        }
-    }
 
 } // namespace Fx

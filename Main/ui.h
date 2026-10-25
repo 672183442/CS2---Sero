@@ -29,7 +29,6 @@ namespace UI {
         bool  showDots = true;
 
         Fx::BeamRain     beams;
-        Fx::ParticleBurst burst;
 
         // 业务数据指针（绑定 &g_MenuData）
         MenuData* menu = nullptr;

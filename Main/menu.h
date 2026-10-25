@@ -5,9 +5,7 @@
 struct PerformanceConfig {
     int updateInterval = 3;
     float maxDrawDistance = 8000.0f;
-    float c4MaxDistance = 5000.0f;
     bool enableDistanceFilter = true;
-    bool enableDynamicUpdate = true;
     bool enableLOD = true;
     float lodDistance1 = 3000.0f;
     float lodDistance2 = 6000.0f;
@@ -37,8 +35,9 @@ struct MenuData
 
     // Aim
     bool bAutoAim = false;
-    float fAimSmooth = 1.0f;
+    float fAimSmooth = 3.0f;
     float fAimSpeed = 1.0f;
+    float fAimPrediction = 0.1f;
     bool bAimScope = false;
     float fAimFOV = 30.0f;
     bool bSilentAim = false;
@@ -67,7 +66,6 @@ struct MenuData
     bool bBunnyHop = false;
 
     // Colors
-    ImVec4 AccentColor;
     ImVec4 AimLockColor;
     ImVec4 BoxColorVisible;
     ImVec4 BoxColorInvisible;
@@ -75,24 +73,10 @@ struct MenuData
     ImVec4 RayColorInvisible;
     float RayThickness = 1.5f;
 
-    // Window
-    float WindowAlpha = 0.93f;
-    float WindowRound = 9.0f;
-    float FontScale = 1.0f;
-    float ItemSpacing = 8.0f;
-    float FramePaddingX = 6.0f;
-    float FramePaddingY = 5.0f;
-
-    // Remote
-    std::string versionInfo;
-    std::string versionNumber;
-    std::string announcement;
-
     PerformanceConfig performance;
 
     MenuData()
     {
-        AccentColor = ImVec4(0.98f, 0.07f, 0.22f, 1.0f);
         AimLockColor = ImVec4(0.0f, 1.0f, 0.0f, 1.0f);
         BoxColorVisible = ImVec4(0.0f, 1.0f, 0.0f, 1.0f);
         BoxColorInvisible = ImVec4(1.0f, 0.0f, 0.0f, 1.0f);
